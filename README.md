@@ -14,6 +14,13 @@ never stores them.
 > and requires Node.js 22.19 or later. dsh can make breaking changes before a stable release; pin
 > both dsh and this plugin when reproducibility matters.
 
+## Key distinction
+
+A squad does not have to share one model configuration. Every agent can independently select an
+existing dsh provider/model route, `maxTokens`, and tool allow/deny policy. Save those agents as
+reusable definitions, combine them into different squads, then choose serial or parallel dispatch
+with `spawn`, `fork`, or serial-only `chain` context through the Web management panel.
+
 ## Status and architecture
 
 ```text

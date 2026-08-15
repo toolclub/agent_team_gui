@@ -12,6 +12,12 @@ allow/deny 列表。API key 始终由 dsh 的 provider 与凭据配置管理；�
 > Node.js 22.19 或更高版本。dsh 在稳定版之前可能有破坏性变更；需要可复现时请同时锁定 dsh
 > 与本插件版本。
 
+## 核心差异
+
+小队不必共享同一个模型配置。每个 Agent 都能独立选择 dsh 中已有的 provider/model 路由、
+`maxTokens` 和工具 allow/deny 策略；这些 Agent 可保存为可复用定义，再组合为不同小队。派单时可选择
+串行或并行执行，以及 `spawn`、`fork` 或串行专用的 `chain` 上下文模式，并通过 Web 面板管理和观察结果。
+
 ## 状态与架构
 
 ```text
