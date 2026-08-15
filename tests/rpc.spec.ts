@@ -14,6 +14,7 @@ async function call<T>(handler: Handler, endpoint: string, payload: unknown, sig
 }
 
 interface SnapshotValue {
+  apiVersion: number
   agents: Array<{ id: string; name: string }>
   squads: Array<{ id: string; name: string }>
   models: Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>
@@ -29,6 +30,7 @@ describe('agent team RPC handler', () => {
     const result = await call<SnapshotValue>(handler, 'snapshot', {}, signal())
     expect(result.ok).toBe(true)
     if (!result.ok) return
+    expect(result.value.apiVersion).toBe(1)
     expect(result.value.agents).toHaveLength(3)
     expect(result.value.squads).toHaveLength(1)
     expect(result.value.models).toEqual([{

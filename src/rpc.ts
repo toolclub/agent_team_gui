@@ -11,6 +11,8 @@ import { AgentId, SquadId } from './types.ts'
 
 /** 与浏览器入口共享的 RPC channel。 */
 export const AGENT_TEAM_RPC_CHANNEL = '/agent-team-gui'
+/** Browser/host contract revision. A snapshot handshake prevents mixed-version UIs. */
+export const AGENT_TEAM_RPC_API_VERSION = 1
 
 const emptySchema = z.object({}).strict()
 const idSchema = z.string().min(1)
@@ -75,6 +77,7 @@ function squadRecord(input: SquadInput) {
 }
 
 const snapshotSchema = z.object({
+  apiVersion: z.literal(AGENT_TEAM_RPC_API_VERSION),
   agents: z.array(z.object({ id: z.string(), ...agentInputSchema.shape })),
   squads: z.array(z.object({
     id: z.string(), name: z.string(), members: z.array(z.string()), collabNote: z.string(),
@@ -129,6 +132,7 @@ async function readSnapshot(ctx: Context, service: AgentTeamService) {
     }
   }))
   return snapshotSchema.parse({
+    apiVersion: AGENT_TEAM_RPC_API_VERSION,
     agents: service.listAgents().map(([id, record]) => ({ id, ...record })),
     squads: service.listSquads().map(([id, record]) => ({ id, ...record, collabNote: record.collabNote ?? '' })),
     models,

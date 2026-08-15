@@ -152,6 +152,10 @@ Settings --> 全局 Agent/小队定义 ---------+
 
    预期：dump 中包含 `dsh-agent-team-gui` 层与 `agent-team-gui` 行。
 
+5. 重启仍在运行的 dsh Web 进程，然后刷新浏览器。安装或更新只会替换磁盘文件，无法替换进程中
+   已加载的 Host 模块。UI 会执行 RPC 版本握手；若 Client 与 Host 版本不一致，会明确提示重启，
+   不再只显示无法解释的感叹号。
+
 ## 从 GitHub 安装
 
 Git 依赖只包含源码，而不是预构建的发布产物。因此本仓库提供自包含的 `prepare` 路径来构建运行时

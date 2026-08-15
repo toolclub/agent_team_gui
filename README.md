@@ -216,6 +216,10 @@ You can also send this single sentence to a DeepSeek Harness agent that has term
 
    Expected: the dump contains the `dsh-agent-team-gui` layer and `agent-team-gui` row.
 
+5. Restart any running dsh Web process, then refresh the browser. Installing or updating replaces
+   files on disk but cannot replace an already loaded host module. The UI performs an RPC revision
+   handshake and shows an explicit restart message if client and host revisions do not match.
+
 > [!CAUTION]
 > `allowBuilds` authorizes that package to execute code on your machine during installation. This
 > code runs outside every dsh agent sandbox. Allow only packages whose source you trust, review the

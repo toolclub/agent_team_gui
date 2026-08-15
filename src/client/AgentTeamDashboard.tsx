@@ -36,6 +36,7 @@ interface ModelGroup {
 }
 
 export interface TeamSnapshot {
+  apiVersion: number
   agents: AgentView[]
   squads: SquadView[]
   models: ModelGroup[]
@@ -49,7 +50,10 @@ interface ControllerSnapshot {
 
 export type AgentTeamRpc = <T>(endpoint: string, payload: unknown) => Promise<T>
 
-const EMPTY_DATA: TeamSnapshot = { agents: [], squads: [], models: [] }
+/** Kept in sync with the host RPC contract; intentionally duplicated across bundles. */
+export const AGENT_TEAM_RPC_API_VERSION = 1
+
+const EMPTY_DATA: TeamSnapshot = { apiVersion: AGENT_TEAM_RPC_API_VERSION, agents: [], squads: [], models: [] }
 
 /** 两个 slot 共享的只读目录缓存；持久数据始终由 host service 持有。 */
 export class AgentTeamController {
@@ -69,16 +73,21 @@ export class AgentTeamController {
     if (!force && this.state.status === 'ready') return Promise.resolve(this.state.data)
     if (this.pending !== undefined) return this.pending
     this.set({ ...this.state, status: 'loading', error: '' })
-    const pending = this.call<TeamSnapshot>('snapshot', {}).then((data) => {
-      this.set({ status: 'ready', data, error: '' })
-      return data
-    }, (reason: unknown) => {
-      const error = errorText(reason)
-      this.set({ ...this.state, status: 'error', error })
-      throw reason
-    }).finally(() => {
-      if (this.pending === pending) this.pending = undefined
-    })
+    const pending = this.call<TeamSnapshot>('snapshot', {})
+      .then((data) => {
+        if (data.apiVersion !== AGENT_TEAM_RPC_API_VERSION) {
+          throw new Error(incompatibleHostMessage())
+        }
+        this.set({ status: 'ready', data, error: '' })
+        return data
+      })
+      .catch((reason: unknown) => {
+        const error = errorText(reason)
+        this.set({ ...this.state, status: 'error', error })
+        throw reason
+      }).finally(() => {
+        if (this.pending === pending) this.pending = undefined
+      })
     this.pending = pending
     return pending
   }
@@ -210,7 +219,15 @@ export function TeamComposerControl({ controller, sessionId, input }: ComposerPr
       >
         <span />
       </button>
-      {error ? <span className="atg-composer-error" aria-label={error}>!</span> : null}
+      {error ? (
+        <button
+          type="button"
+          className="atg-composer-error"
+          title={error}
+          aria-label={error}
+          onClick={() => { window.alert(error) }}
+        >!</button>
+      ) : null}
     </div>
   )
 }
@@ -570,10 +587,18 @@ function csv(value: string): string[] {
 }
 
 function errorText(reason: unknown): string {
-  return reason instanceof Error ? reason.message : String(reason)
+  const message = reason instanceof Error ? reason.message : String(reason)
+  return message.includes('unknown agent team endpoint') ? incompatibleHostMessage() : message
+}
+
+function incompatibleHostMessage(): string {
+  return localeIsZh()
+    ? 'Agent Team GUI 前后端版本不一致，请重启 DeepSeek Harness 后刷新页面。'
+    : 'Agent Team GUI client/host versions do not match. Restart DeepSeek Harness, then refresh the page.'
 }
 
 /** 由入口一次性挂载，避免外部插件构建依赖 CSS Modules 转换器。 */
 export const CLIENT_STYLES = `
 .atg-page{display:grid;gap:20px;color:var(--dsw-alias-label-primary);font-family:var(--dsw-font-family);padding:4px 0 30px}.atg-page *{box-sizing:border-box}.atg-page-header{display:flex;justify-content:space-between;align-items:flex-start;gap:18px}.atg-page h2{font-size:22px;line-height:30px;margin:0 0 4px}.atg-page-header p{max-width:580px;margin:0;color:var(--dsw-alias-label-tertiary);font-size:13px;line-height:20px}.atg-toolbar,.atg-actions{display:flex;align-items:center;gap:8px}.atg-alert,.atg-note,.atg-loading{padding:10px 12px;border-radius:10px;font-size:12px;line-height:18px}.atg-alert{color:var(--dsw-alias-state-error-primary);background:var(--dsw-alias-interactive-bg-hover-danger)}.atg-note,.atg-loading{color:var(--dsw-alias-label-secondary);background:var(--dsw-alias-bg-module-platform)}.atg-section{display:grid;gap:12px}.atg-section-title{display:flex;align-items:center;justify-content:space-between;gap:12px}.atg-section-title>div{display:flex;align-items:center;gap:9px}.atg-section h3{font-size:15px;margin:0}.atg-kicker{display:grid;place-items:center;width:26px;height:26px;border:1px solid var(--dsw-alias-border-l2);border-radius:8px;color:var(--dsw-alias-label-tertiary);font-size:10px;font-weight:650}.atg-workspace{display:grid;grid-template-columns:minmax(180px,220px) minmax(0,1fr);gap:12px}.atg-list,.atg-editor{border:1px solid var(--dsw-alias-border-l2);border-radius:14px;background:var(--dsw-alias-bg-layer-1)}.atg-list{display:flex;flex-direction:column;gap:5px;min-height:180px;padding:7px}.atg-list-card{display:flex;align-items:center;gap:5px;border-radius:9px}.atg-list-card:hover{background:var(--dsw-alias-interactive-bg-hover)}.atg-list-card.is-active{background:var(--dsw-specific-sidebar-nav-item-active)}.atg-list-main{min-width:0;flex:1;display:grid;gap:2px;padding:9px;border:0;background:transparent;color:inherit;text-align:left;cursor:pointer}.atg-list-main strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}.atg-list-main span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:11px}.atg-editor{display:grid;align-content:start;gap:12px;padding:16px}.atg-editor-head{display:flex;justify-content:space-between;align-items:baseline;gap:10px;padding-bottom:10px;border-bottom:1px solid var(--dsw-alias-border-l2)}.atg-editor-head strong{font-size:14px}.atg-editor-head span{color:var(--dsw-alias-label-tertiary);font-size:11px}.atg-field{display:grid;gap:6px;color:var(--dsw-alias-label-secondary);font-size:12px}.atg-field>span,.atg-field-label{font-weight:550}.atg-field input,.atg-field select,.atg-field textarea{width:100%;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;padding:8px 10px;background:var(--dsw-alias-bg-layer-2);color:var(--dsw-alias-label-primary);font:inherit;outline:none}.atg-field textarea{min-height:76px;resize:vertical;line-height:19px}.atg-field input:focus,.atg-field select:focus,.atg-field textarea:focus{border-color:var(--dsw-alias-brand-primary);box-shadow:0 0 0 2px color-mix(in srgb,var(--dsw-alias-brand-primary) 16%,transparent)}.atg-field input::placeholder,.atg-field textarea::placeholder{color:var(--dsw-alias-label-tertiary)}.atg-two{display:grid;grid-template-columns:1fr 1fr;gap:10px}.atg-member-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}.atg-member-card{display:grid;grid-template-columns:auto 30px minmax(0,1fr);align-items:center;gap:8px;padding:8px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;cursor:pointer}.atg-member-card:hover{background:var(--dsw-alias-interactive-bg-hover)}.atg-member-card.is-selected{border-color:var(--dsw-alias-brand-primary);background:color-mix(in srgb,var(--dsw-alias-brand-primary) 8%,transparent)}.atg-member-card input{accent-color:var(--dsw-alias-brand-primary)}.atg-member-card>span:last-child{min-width:0;display:grid;gap:2px}.atg-member-card strong,.atg-member-card small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.atg-member-card strong{font-size:12px}.atg-member-card small{color:var(--dsw-alias-label-tertiary);font-size:10px}.atg-avatar{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:var(--dsw-alias-bg-module-platform);color:var(--dsw-alias-label-secondary);font-size:10px;font-weight:700}.atg-order-toggle{display:flex;align-items:flex-start;gap:9px;padding:10px;border:1px solid var(--dsw-alias-border-l2);border-radius:10px;cursor:pointer}.atg-order-toggle input{margin-top:3px;accent-color:var(--dsw-alias-brand-primary)}.atg-order-toggle span{display:grid;gap:2px}.atg-order-toggle strong{font-size:12px}.atg-order-toggle small{color:var(--dsw-alias-label-tertiary);font-size:11px;line-height:16px}.atg-order-list{display:grid;gap:5px;margin:0;padding:0;list-style:none}.atg-order-list li{display:grid;grid-template-columns:25px minmax(0,1fr) auto;align-items:center;gap:8px;padding:7px 8px;border-radius:9px;background:var(--dsw-alias-bg-module-platform)}.atg-order-list li>span:nth-child(2){min-width:0;display:grid}.atg-order-list strong{font-size:12px}.atg-order-list small{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--dsw-alias-label-tertiary);font-size:10px}.atg-order-number{display:grid;place-items:center;width:23px;height:23px;border-radius:7px;background:var(--dsw-alias-bg-layer-1);font-size:10px;font-weight:700}.atg-order-actions{display:flex;gap:3px}.atg-actions{justify-content:flex-end;padding-top:3px}.atg-button,.atg-icon{border:1px solid transparent;color:inherit;font:inherit;cursor:pointer}.atg-button{min-height:32px;border-radius:9px;padding:6px 11px;font-size:12px;font-weight:550}.atg-button.ghost{border-color:var(--dsw-alias-border-l2);background:transparent}.atg-button.ghost:hover,.atg-icon:hover{background:var(--dsw-alias-interactive-bg-hover)}.atg-button.primary{background:var(--dsw-alias-button-primary-fill);color:var(--dsw-alias-label-primary-foreground)}.atg-button.primary:hover{background:var(--dsw-alias-button-primary-hover)}.atg-button:disabled,.atg-icon:disabled{opacity:.45;cursor:not-allowed}.atg-icon{display:grid;place-items:center;width:27px;height:27px;border-radius:8px;background:transparent}.atg-icon.danger{color:var(--dsw-alias-state-error-primary)}.atg-details{border-top:1px solid var(--dsw-alias-border-l2);padding-top:10px}.atg-details summary{cursor:pointer;color:var(--dsw-alias-label-secondary);font-size:12px}.atg-details[open] summary{margin-bottom:10px}.atg-empty{grid-column:1/-1;display:grid;place-items:center;align-content:center;gap:8px;min-height:100px;padding:16px;color:var(--dsw-alias-label-tertiary);text-align:center;font-size:11px}.atg-composer{display:flex;align-items:center;gap:5px;max-width:210px;height:28px;padding:2px 5px;border:1px solid var(--dsw-alias-border-l2);border-radius:9px;background:var(--dsw-alias-bg-layer-1);pointer-events:auto}.atg-mode-dot{flex:none;width:6px;height:6px;border-radius:99px;background:var(--dsw-alias-label-dimmed)}.atg-mode-dot.is-on{background:var(--dsw-alias-state-success-primary);box-shadow:0 0 0 3px color-mix(in srgb,var(--dsw-alias-state-success-primary) 13%,transparent)}.atg-composer-select{min-width:0;max-width:125px;flex:1;border:0;background:transparent;color:var(--dsw-alias-label-secondary);font:500 11px/18px var(--dsw-font-family);outline:none;text-overflow:ellipsis}.atg-switch{position:relative;flex:none;width:28px;height:16px;padding:0;border:0;border-radius:99px;background:var(--dsw-alias-border-l3);cursor:pointer;transition:background .15s}.atg-switch span{position:absolute;left:2px;top:2px;width:12px;height:12px;border-radius:50%;background:var(--dsw-alias-bg-layer-1);transition:transform .15s}.atg-switch.is-on{background:var(--dsw-alias-state-success-primary)}.atg-switch.is-on span{transform:translateX(12px)}.atg-switch:disabled{opacity:.45;cursor:not-allowed}.atg-composer-error{display:grid;place-items:center;flex:none;width:14px;height:14px;border-radius:50%;color:var(--dsw-alias-state-error-primary);font-size:10px;font-weight:800}@media(max-width:720px){.atg-page-header{display:grid}.atg-workspace{grid-template-columns:1fr}.atg-list{min-height:0;max-height:190px;overflow:auto}.atg-member-grid,.atg-two{grid-template-columns:1fr}.atg-toolbar{flex-wrap:wrap}}
+.atg-composer-error{padding:0;border:0;background:transparent;font:800 10px/1 var(--dsw-font-family);cursor:help}
 `
