@@ -279,8 +279,9 @@ const squad = await ctx.agentTeamGui.createSquad({
 ```
 
 The service also exposes get/list/update/delete methods for both record types,
-`addMemberToSquad`, `removeMemberFromSquad`, and a programmatic `dispatch` method. Exact TypeScript
-signatures are exported by the package declarations.
+`addMemberToSquad`, `removeMemberFromSquad`, `exportDefinitions`/`importDefinitions`, and a
+programmatic `dispatch` method. Exact TypeScript signatures are exported by the package
+declarations.
 
 ## Usage examples
 
@@ -323,6 +324,24 @@ Panel: completed — Reviewer: completed; Test agent: completed
 The direct result is shown in the overlay; button dispatch does not synthesize an assistant chat
 message.
 
+### Export and import definitions
+
+The **Agent Teams** panel can dump and restore the durable definitions as a JSON document.
+
+- **Export** downloads `agent-team-gui-<date>.json` containing `{ "format":
+  "agent-team-gui/definitions", "version": 1, "agents": [...], "squads": [...] }` — every record with
+  its durable id, plus model routes (never API keys).
+- **Import** reads such a file and applies it with **merge** semantics: document rows are upserted by
+  id, rows already in the store that the document does not mention are kept, and a squad may
+  reference an agent that already exists in the store. The whole document is validated first — shape,
+  duplicate ids, model routes, and squad member references — so a rejected import writes nothing.
+  (The durable writes themselves are not a single transaction: a storage failure mid-import can leave
+  a partial apply.)
+
+The same operations are available in-process as `exportDefinitions()` and
+`importDefinitions(document, mode)`; `mode` is `merge` (default) or `replace`. `replace` makes the
+document the entire store, and then a squad may only reference agents present in the document.
+
 ## Observability and failure behavior
 
 The parent session's ordinary `tool/call` and `tool/result` events retain the request and complete
@@ -362,8 +381,8 @@ list. Durable records under the dsh storage backend are not automatically delete
 
 ## Roadmap
 
-- Add import/export, bulk editing, and richer per-agent assignment controls in the Web panel.
-- Add import/export and schema migrations for durable definitions.
+- Add bulk editing and richer per-agent assignment controls in the Web panel.
+- Add schema migrations for durable definitions.
 - Add bounded concurrency and richer trajectory projections for large squads.
 
 ## Contributing

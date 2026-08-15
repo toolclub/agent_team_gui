@@ -160,6 +160,17 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
           const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
           return success({ deleted: await service.deleteSquad(SquadId(payload.id)) })
         }
+        case 'export': {
+          emptySchema.parse(rawPayload)
+          return success(await service.exportDefinitions())
+        }
+        case 'import': {
+          const payload = z.object({
+            doc: z.unknown(),
+            mode: z.enum(['merge', 'replace']).optional(),
+          }).strict().parse(rawPayload)
+          return success(await service.importDefinitions(payload.doc, payload.mode ?? 'merge'))
+        }
         case 'dispatch': {
           const payload = dispatchInputSchema.parse(rawPayload)
           const parent = ctx.agents.get(SessionId(payload.sessionId))

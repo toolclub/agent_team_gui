@@ -1,0 +1,165 @@
+import { describe, expect, it } from 'vitest'
+import { SessionId } from '@deepseek-ai/dsh-session'
+import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
+import { createAgentTeamRpcHandler } from '../src/rpc.ts'
+import type { AgentId } from '../src/types.ts'
+import type { AgentTeamExportDocument, AgentTeamImportResult, SquadDispatchResult } from '../src/types.ts'
+import { agent, createService, populate, researcherId, squadId, writerId } from './helpers.ts'
+
+type Handler = ReturnType<typeof createAgentTeamRpcHandler>
+
+/** Run one endpoint with a typed success value; the handler itself is RpcResult<unknown>. */
+async function call<T>(handler: Handler, endpoint: string, payload: unknown, signal: AbortSignal): Promise<RpcResult<T>> {
+  return await handler(endpoint, payload, signal) as RpcResult<T>
+}
+
+interface SnapshotValue {
+  agents: Array<{ id: string; name: string }>
+  squads: Array<{ id: string; name: string }>
+  models: Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>
+}
+
+describe('agent team RPC handler', () => {
+  const signal = (): AbortSignal => new AbortController().signal
+
+  it('serves a snapshot with agents, squads, and the model catalog', async () => {
+    const state = await populate()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const result = await call<SnapshotValue>(handler, 'snapshot', {}, signal())
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.agents).toHaveLength(3)
+    expect(result.value.squads).toHaveLength(1)
+    expect(result.value.models).toEqual([{
+      provider: 'configured',
+      name: 'Configured',
+      models: [{ id: 'deepseek-v4', name: 'DeepSeek V4' }],
+    }])
+  })
+
+  it('creates, updates, and deletes agents through the endpoint boundary', async () => {
+    const state = createService()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const created = await call<{ id: string }>(handler, 'agent/create', {
+      record: { name: 'Researcher', systemPrompt: 'You are Researcher.', provider: 'configured', model: 'researcher' },
+    }, signal())
+    expect(created.ok).toBe(true)
+    if (!created.ok) return
+    const id = created.value.id
+
+    const updated = await call<{ updated: boolean }>(handler, 'agent/update', {
+      id,
+      record: { name: 'Researcher v2', systemPrompt: 'updated', provider: 'configured', model: 'researcher' },
+    }, signal())
+    expect(updated.ok).toBe(true)
+    expect(state.service.getAgent(id as AgentId)?.name).toBe('Researcher v2')
+
+    const deleted = await call<{ deleted: boolean }>(handler, 'agent/delete', { id }, signal())
+    expect(deleted.ok).toBe(true)
+    expect(state.service.getAgent(id as AgentId)).toBeUndefined()
+  })
+
+  it('maps zod boundary violations and domain errors to RpcError', async () => {
+    const state = createService()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const invalid = await call<unknown>(handler, 'agent/create', {
+      record: { name: '', systemPrompt: '', provider: '', model: '' },
+    }, signal())
+    expect(invalid.ok).toBe(false)
+    if (invalid.ok) return
+    expect(invalid.error.code).toBe('bad-request')
+    expect(invalid.error.message.length).toBeGreaterThan(0)
+
+    const missingMember = await call<unknown>(handler, 'squad/create', { record: { name: 'S', members: ['nope'] } }, signal())
+    expect(missingMember.ok).toBe(false)
+    if (missingMember.ok) return
+    expect(missingMember.error.code).toBe('bad-request')
+    expect(missingMember.error.message).toContain('INVALID_MEMBERS')
+  })
+
+  it('rejects unknown endpoints and surfaces cancellation', async () => {
+    const state = createService()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const unknown = await call<unknown>(handler, 'bogus', {}, signal())
+    expect(unknown.ok).toBe(false)
+    if (unknown.ok) return
+    expect(unknown.error.code).toBe('bad-request')
+
+    const controller = new AbortController()
+    controller.abort()
+    const cancelled = await call<unknown>(handler, 'agent/create', { record: { name: '' } }, controller.signal)
+    expect(cancelled.ok).toBe(false)
+    if (cancelled.ok) return
+    expect(cancelled.error.code).toBe('cancelled')
+  })
+
+  it('dispatch requires a live parent agent for the session', async () => {
+    const state = await populate()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const result = await call<unknown>(handler, 'dispatch', { sessionId: 'nope', squadId, task: 'x' }, signal())
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('session-not-found')
+  })
+
+  it('dispatch rejects an unknown squad id', async () => {
+    const state = createService({ agentsGet: () => ({ id: SessionId('parent') }) as unknown })
+    await state.agents.put(researcherId, agent('Researcher'))
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId] })
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const result = await call<unknown>(handler, 'dispatch', { sessionId: 'parent', squadId: 'nope', task: 'x' }, signal())
+    expect(result.ok).toBe(false)
+    if (result.ok) return
+    expect(result.error.code).toBe('bad-request')
+    expect(result.error.message).toContain('SQUAD_NOT_FOUND')
+  })
+
+  it('dispatches a full squad through the endpoint', async () => {
+    const state = createService({ agentsGet: () => ({ id: SessionId('parent') }) as unknown })
+    await state.agents.put(researcherId, agent('Researcher'))
+    await state.agents.put(writerId, agent('Writer'))
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId, writerId] })
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const result = await call<SquadDispatchResult>(handler, 'dispatch', {
+      sessionId: 'parent',
+      squadId,
+      task: 'Ship it',
+      executionMode: 'parallel',
+      contextMode: 'spawn',
+    }, signal())
+    expect(result.ok).toBe(true)
+    if (!result.ok) return
+    expect(result.value.status).toBe('completed')
+    expect(result.value.members).toHaveLength(2)
+  })
+
+  it('exports and imports definitions through the endpoint boundary', async () => {
+    const source = await populate()
+    const sourceHandler = createAgentTeamRpcHandler(source.ctx, source.service)
+    const exported = await call<AgentTeamExportDocument>(sourceHandler, 'export', {}, signal())
+    expect(exported.ok).toBe(true)
+    if (!exported.ok) return
+
+    const target = createService()
+    const targetHandler = createAgentTeamRpcHandler(target.ctx, target.service)
+    const imported = await call<AgentTeamImportResult>(targetHandler, 'import', { doc: exported.value }, signal())
+    expect(imported.ok).toBe(true)
+    if (!imported.ok) return
+    expect(imported.value).toEqual({ agents: 3, squads: 1 })
+    expect(target.service.listSquads()).toEqual(source.service.listSquads())
+
+    const bad = await call<unknown>(targetHandler, 'import', {
+      doc: { format: 'nope', version: 1, agents: [], squads: [] },
+    }, signal())
+    expect(bad.ok).toBe(false)
+    if (bad.ok) return
+    expect(bad.error.code).toBe('bad-request')
+  })
+})

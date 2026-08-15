@@ -86,3 +86,39 @@ export interface SquadDispatchResult {
   readonly status: 'completed' | 'partial' | 'failed'
   readonly members: SquadMemberResult[]
 }
+
+/** One agent row inside an exported definition document. */
+export interface AgentExportItem {
+  readonly id: AgentId
+  readonly name: string
+  readonly systemPrompt: string
+  readonly provider: string
+  readonly model: string
+  readonly maxTokens?: number
+  readonly toolScope?: AgentToolScope
+}
+
+/** One squad row inside an exported definition document. */
+export interface SquadExportItem {
+  readonly id: SquadId
+  readonly name: string
+  readonly members: AgentId[]
+  readonly collabNote?: string
+}
+
+/** Versioned, self-describing dump of every durable agent/squad definition. */
+export interface AgentTeamExportDocument {
+  readonly format: 'agent-team-gui/definitions'
+  readonly version: 1
+  readonly agents: AgentExportItem[]
+  readonly squads: SquadExportItem[]
+}
+
+/** How an imported document is applied to the existing durable store. */
+export type AgentTeamImportMode = 'merge' | 'replace'
+
+/** Count of rows actually written by one import call. */
+export interface AgentTeamImportResult {
+  readonly agents: number
+  readonly squads: number
+}

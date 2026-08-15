@@ -6,23 +6,28 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
-import { agentRecordSchema, agentTeamDomainSpec, squadRecordSchema } from './spec.ts'
+import { agentRecordSchema, agentTeamDomainSpec, agentTeamExportSchema, squadRecordSchema } from './spec.ts'
 import { createDispatchToSquadTool } from './tools/dispatch-to-squad.ts'
 import { registerAgentTeamRpc } from './rpc.ts'
 import {
   AgentId,
   DispatchId,
   SquadId,
+  type AgentExportItem,
   type AgentRecord,
+  type AgentTeamExportDocument,
+  type AgentTeamImportMode,
+  type AgentTeamImportResult,
   type SquadAssignment,
   type SquadDispatchRequest,
   type SquadDispatchResult,
+  type SquadExportItem,
   type SquadMemberResult,
   type SquadRecord,
 } from './types.ts'
 
 export * from './types.ts'
-export { agentRecordSchema, agentTeamDomainSpec, squadRecordSchema } from './spec.ts'
+export { agentExportItemSchema, agentRecordSchema, agentTeamDomainSpec, agentTeamExportSchema, squadExportItemSchema, squadRecordSchema } from './spec.ts'
 export { createDispatchToSquadTool } from './tools/dispatch-to-squad.ts'
 export { AGENT_TEAM_RPC_CHANNEL, createAgentTeamRpcHandler } from './rpc.ts'
 
@@ -44,7 +49,8 @@ export class AgentTeamError extends Error {
       | 'SQUAD_NOT_FOUND'
       | 'INVALID_MEMBERS'
       | 'INVALID_ASSIGNMENTS'
-      | 'INVALID_DISPATCH',
+      | 'INVALID_DISPATCH'
+      | 'INVALID_IMPORT',
   ) {
     super(message)
     this.name = 'AgentTeamError'
@@ -191,6 +197,71 @@ export class AgentTeamService extends Service {
   /** Snapshot all squad definitions in durable iteration order. */
   listSquads(): [SquadId, SquadRecord][] {
     return [...this.squads().entries()]
+  }
+
+  /** Dump every durable definition as a versioned, self-describing document. */
+  async exportDefinitions(): Promise<AgentTeamExportDocument> {
+    return {
+      format: 'agent-team-gui/definitions',
+      version: 1,
+      agents: this.listAgents().map(([id, record]) => ({ id, ...record })),
+      squads: this.listSquads().map(([id, record]) => ({ id, ...record })),
+    }
+  }
+
+  /**
+   * Apply a definition document to the durable store. The whole document is
+   * validated first (shape, uniqueness, model routes, squad references), so a
+   * failing import writes nothing. Durable writes themselves are not a single
+   * transaction: a storage failure mid-import can leave a partial apply.
+   */
+  async importDefinitions(document: unknown, mode: AgentTeamImportMode = 'merge'): Promise<AgentTeamImportResult> {
+    if (mode !== 'merge' && mode !== 'replace') {
+      throw new AgentTeamError(`unknown import mode "${String(mode)}"`, 'INVALID_IMPORT')
+    }
+    const parsed = agentTeamExportSchema.parse(document)
+
+    const seenAgents = new Set<string>()
+    const agentsToWrite: Array<{ id: AgentId; record: AgentRecord }> = parsed.agents.map((item) => {
+      if (seenAgents.has(item.id)) {
+        throw new AgentTeamError(`duplicate agent "${item.id}" in import document`, 'INVALID_IMPORT')
+      }
+      seenAgents.add(item.id)
+      const { id, ...recordFields } = item
+      return { id: AgentId(id), record: agentRecordSchema.parse(recordFields) }
+    })
+    await Promise.all(agentsToWrite.map(item => this.validateModelRoute(item.record)))
+
+    // Squads may only reference agents that will exist after the import.
+    const knownAgents = new Set<string>(mode === 'replace'
+      ? agentsToWrite.map(item => item.id)
+      : [...this.listAgents().map(([id]) => id), ...agentsToWrite.map(item => item.id)])
+
+    const seenSquads = new Set<string>()
+    const squadsToWrite: Array<{ id: SquadId; record: SquadRecord }> = parsed.squads.map((item) => {
+      if (seenSquads.has(item.id)) {
+        throw new AgentTeamError(`duplicate squad "${item.id}" in import document`, 'INVALID_IMPORT')
+      }
+      seenSquads.add(item.id)
+      const { id, ...recordFields } = item
+      const record = squadRecordSchema.parse(recordFields)
+      const missing = record.members.filter(memberId => !knownAgents.has(memberId))
+      if (missing.length > 0) {
+        throw new AgentTeamError(
+          `import squad "${id}" references unknown agents: ${missing.join(', ')}`,
+          'INVALID_IMPORT',
+        )
+      }
+      return { id: SquadId(id), record }
+    })
+
+    if (mode === 'replace') {
+      for (const [id] of this.listAgents()) await this.agents().delete(id)
+      for (const [id] of this.listSquads()) await this.squads().delete(id)
+    }
+    for (const { id, record } of agentsToWrite) await this.agents().put(id, record)
+    for (const { id, record } of squadsToWrite) await this.squads().put(id, record)
+    return { agents: agentsToWrite.length, squads: squadsToWrite.length }
   }
 
   /** Resolve a model/user supplied durable id or unique configured squad name. */

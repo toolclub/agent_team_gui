@@ -266,7 +266,8 @@ const squad = await ctx.agentTeamGui.createSquad({
 ```
 
 Service 还提供两类记录的 get/list/update/delete 方法、`addMemberToSquad`、
-`removeMemberFromSquad` 与可编程 `dispatch` 方法。准确 TypeScript 签名以包导出的声明文件为准。
+`removeMemberFromSquad`、`exportDefinitions`/`importDefinitions` 与可编程 `dispatch` 方法。准确
+TypeScript 签名以包导出的声明文件为准。
 
 ## 使用示例
 
@@ -306,6 +307,21 @@ ID，也可以是小队准确名称（不区分大小写）；若名称重复，
 
 直接结果显示在 overlay 中；按钮派单不会合成一条 assistant 对话消息。
 
+### 定义导出/导入
+
+**Agent 小队**面板可以把全部持久化定义导出/恢复为一个 JSON 文档。
+
+- **导出**下载 `agent-team-gui-<日期>.json`，内容为 `{ "format": "agent-team-gui/definitions",
+  "version": 1, "agents": [...], "squads": [...] }`——每条记录携带持久化 id 与模型路由（绝不包含
+  API key）。
+- **导入**读取该文件并按 **merge** 语义应用：文档中的行按 id upsert；文档未提及但已存在的行会
+  保留；小队可以引用存储中已有的 agent。整个文档先做完整校验（结构、重复 id、模型路由、小队
+  成员引用），因此被拒绝的导入不会写入任何数据。（持久化写入本身不是单一事务：中途存储失败可能
+  留下部分应用的结果。）
+
+进程内同样可用 `exportDefinitions()` 与 `importDefinitions(document, mode)`；`mode` 为 `merge`
+（默认）或 `replace`。`replace` 让文档成为整个存储，此时小队只能引用文档内的 agent。
+
 ## 可观测性与失败行为
 
 父会话的常规 `tool/call` 与 `tool/result` 事件会保留请求和完整聚合结果。若成员已经启动，其结果
@@ -339,8 +355,8 @@ dsh plugin --profile web remove dsh-agent-team-gui
 
 ## Roadmap
 
-- 为 Web 面板增加导入/导出、批量编辑和更丰富的逐 Agent 分工控制。
-- 为持久化定义增加导入/导出与 schema migration。
+- 为 Web 面板增加批量编辑和更丰富的逐 Agent 分工控制。
+- 为持久化定义增加 schema migration。
 - 为大规模小队增加有界并发与更丰富的 trajectory projection。
 
 ## 贡献指南

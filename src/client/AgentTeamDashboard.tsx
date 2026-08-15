@@ -3,6 +3,7 @@
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   useSyncExternalStore,
   type CSSProperties,
@@ -154,6 +155,7 @@ export function AgentTeamDashboard({ controller, call }: DashboardProps): ReactN
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [dispatchResult, setDispatchResult] = useState<DispatchResult | null>(null)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   const refresh = async (): Promise<void> => {
     const next = await call<DashboardSnapshot>('snapshot', {})
@@ -186,6 +188,41 @@ export function AgentTeamDashboard({ controller, call }: DashboardProps): ReactN
     setError('')
     try {
       await call(endpoint, payload)
+      await refresh()
+    } catch (reason) {
+      setError(errorText(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const exportData = async (): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try {
+      const doc = await call<unknown>('export', {})
+      const blob = new Blob([JSON.stringify(doc, null, 2)], { type: 'application/json' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = `agent-team-gui-${new Date().toISOString().slice(0, 10)}.json`
+      document.body.appendChild(anchor)
+      anchor.click()
+      anchor.remove()
+      URL.revokeObjectURL(url)
+    } catch (reason) {
+      setError(errorText(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const importFile = async (file: File): Promise<void> => {
+    setBusy(true)
+    setError('')
+    try {
+      const doc: unknown = JSON.parse(await file.text())
+      await call<unknown>('import', { doc, mode: 'merge' })
       await refresh()
     } catch (reason) {
       setError(errorText(reason))
@@ -255,7 +292,22 @@ export function AgentTeamDashboard({ controller, call }: DashboardProps): ReactN
             <strong style={styles.title}>{zh ? 'Agent 小队' : 'Agent Teams'}</strong>
             <span style={styles.subtitle}>{zh ? '模型路由来自 dsh Settings，不保存 API key' : 'Model routes come from dsh Settings; API keys are never stored'}</span>
           </div>
-          <button type="button" style={styles.close} onClick={() => { controller.close() }}>×</button>
+          <div style={styles.headerActions}>
+            <button type="button" style={styles.secondary} disabled={busy} onClick={() => { void exportData() }}>{zh ? '导出' : 'Export'}</button>
+            <button type="button" style={styles.secondary} disabled={busy} onClick={() => { fileInputRef.current?.click() }}>{zh ? '导入' : 'Import'}</button>
+            <button type="button" style={styles.close} onClick={() => { controller.close() }}>×</button>
+          </div>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: 'none' }}
+            onChange={event => {
+              const file = event.currentTarget.files?.[0]
+              if (file !== undefined) void importFile(file)
+              event.currentTarget.value = ''
+            }}
+          />
         </header>
 
         {error ? <p role="alert" style={styles.error}>{error}</p> : null}
@@ -349,6 +401,7 @@ const styles = {
   backdrop: { position: 'fixed', inset: 0, zIndex: 80, display: 'grid', placeItems: 'center', padding: 20, background: 'rgba(8, 12, 20, .58)', pointerEvents: 'auto' },
   panel: { width: 'min(1080px, 96vw)', maxHeight: '92vh', overflow: 'auto', border: '1px solid color-mix(in srgb, currentColor 16%, transparent)', borderRadius: 18, padding: 18, color: 'var(--text-primary, #e9eef8)', background: 'var(--background-primary, #111722)', boxShadow: '0 24px 90px rgba(0,0,0,.45)' },
   header: { display: 'flex', justifyContent: 'space-between', gap: 16, alignItems: 'flex-start', marginBottom: 14 },
+  headerActions: { display: 'flex', gap: 8, alignItems: 'center' },
   title: { display: 'block', fontSize: 22 },
   subtitle: { display: 'block', marginTop: 4, color: 'var(--text-secondary, #9aa8bd)', fontSize: 12 },
   close: { border: 0, background: 'transparent', color: 'inherit', fontSize: 26, cursor: 'pointer' },

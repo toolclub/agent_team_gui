@@ -1,129 +1,22 @@
-import { Context } from '@deepseek-ai/cordis'
+import { describe, expect, it, vi } from 'vitest'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
-import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import { SessionId } from '@deepseek-ai/dsh-session'
-import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
-import { describe, expect, it, vi } from 'vitest'
+import type { SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import AgentTeamService, { AgentTeamError } from '../src/index.ts'
 import { AgentId, SquadId } from '../src/types.ts'
-import type { AgentRecord, SquadRecord } from '../src/types.ts'
-
-class MemoryTable<K extends string, V> implements KvTable<K, V> {
-  private readonly values = new Map<K, V>()
-
-  get size(): number {
-    return this.values.size
-  }
-
-  get(key: K): V | undefined {
-    return this.values.get(key)
-  }
-
-  entries(): IterableIterator<[K, V]> {
-    return new Map(this.values).entries()
-  }
-
-  keys(): IterableIterator<K> {
-    return new Map(this.values).keys()
-  }
-
-  async put(key: K, value: V): Promise<void> {
-    this.values.set(key, value)
-  }
-
-  async delete(key: K): Promise<boolean> {
-    return this.values.delete(key)
-  }
-
-  async update(key: K, transform: (current: V) => V): Promise<V> {
-    const current = this.values.get(key)
-    if (current === undefined) throw new Error(`missing key ${key}`)
-    const next = transform(current)
-    this.values.set(key, next)
-    return next
-  }
-}
-
-const researcherId = AgentId('researcher')
-const writerId = AgentId('writer')
-const reviewerId = AgentId('reviewer')
-const squadId = SquadId('delivery')
-
-const agent = (name: string, model = name.toLowerCase()): AgentRecord => ({
-  name,
-  systemPrompt: `You are ${name}.`,
-  provider: 'configured',
-  model,
-})
-
-interface FixtureOptions {
-  readonly start?: (provider: string, request: SubagentStartRequest) => ReturnType<SubagentRuntime['start']>
-  readonly resolveModelInfo?: LlmRuntime['resolveModelInfo']
-}
-
-function fixture(options: FixtureOptions = {}) {
-  const ctx = new Context()
-  const starts: { provider: string; request: SubagentStartRequest }[] = []
-  const subagents = {
-    start: options.start ?? (async (provider: string, request: SubagentStartRequest) => {
-      starts.push({ provider, request })
-      const id = SessionId(`child-${starts.length}`)
-      return {
-        id,
-        localAgent: undefined,
-        result: Promise.resolve({
-          output: [{ type: 'text' as const, text: request.label ?? '' }],
-          stopReason: 'completed' as const,
-        }),
-        async dispose() {},
-      }
-    }),
-  }
-  const llm = {
-    resolveModelInfo: options.resolveModelInfo ?? vi.fn(async (provider: string, model: string) => ({
-      provider,
-      id: model,
-      name: model,
-    })),
-  }
-  ctx.provide('subagents', subagents)
-  ctx.provide('llm', llm)
-  const service = new AgentTeamService(ctx, {
-    defaultProvider: 'spawn',
-    defaultExecutionMode: 'serial',
-    defaultContextMode: 'spawn',
-  })
-  const agents = new MemoryTable<AgentId, AgentRecord>()
-  const squads = new MemoryTable<SquadId, SquadRecord>()
-  Object.assign(service, { agentsTable: agents, squadsTable: squads })
-  const parent = { id: SessionId('parent') } as unknown as Agent
-  return { service, agents, squads, starts, parent }
-}
-
-async function populate() {
-  const state = fixture()
-  await state.agents.put(researcherId, agent('Researcher'))
-  await state.agents.put(writerId, agent('Writer'))
-  await state.agents.put(reviewerId, agent('Reviewer'))
-  await state.squads.put(squadId, {
-    name: 'Delivery',
-    members: [researcherId, writerId, reviewerId],
-    collabNote: 'Return concrete evidence.',
-  })
-  return state
-}
+import { agent, createService, populate, researcherId, reviewerId, squadId, writerId } from './helpers.ts'
 
 describe('AgentTeamService CRUD', () => {
   it('validates model routes and squad references before durable writes', async () => {
     const resolveModelInfo = vi.fn(async () => { throw new Error('route is not configured') })
-    const { service } = fixture({ resolveModelInfo: resolveModelInfo as unknown as LlmRuntime['resolveModelInfo'] })
+    const { service } = createService({ resolveModelInfo: resolveModelInfo as unknown as LlmRuntime['resolveModelInfo'] })
 
     await expect(service.createAgent(agent('Unknown'), AgentId('unknown')))
       .rejects.toThrow('invalid model route configured/unknown: route is not configured')
     expect(service.listAgents()).toEqual([])
 
-    const valid = fixture()
+    const valid = createService()
     await valid.service.createAgent(agent('Researcher'), researcherId)
     await expect(valid.service.createSquad({ name: 'Bad', members: [researcherId, researcherId] }, SquadId('bad')))
       .rejects.toMatchObject({ code: 'INVALID_MEMBERS' })
@@ -154,7 +47,7 @@ describe('AgentTeamService dispatch', () => {
   it('chains serial output, preserves child ids, and continues after member failures', async () => {
     const requests: SubagentStartRequest[] = []
     let call = 0
-    const state = fixture({
+    const state = createService({
       start: async (_provider, request) => {
         requests.push(request)
         call += 1
@@ -220,7 +113,7 @@ describe('AgentTeamService dispatch', () => {
   })
 
   it('reports cleanup failure without replacing other member outcomes', async () => {
-    const state = fixture({
+    const state = createService({
       start: async () => ({
         id: SessionId('cleanup-child'),
         localAgent: undefined,
