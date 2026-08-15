@@ -80,29 +80,29 @@ checkout.
 
 ## Install from a local directory
 
-Run each command from the directory that contains `agent_team_gui`.
+Run each command from the directory that contains `dsh-agent-team-gui`.
 
 1. Install the plugin's development dependencies:
 
    ```sh
-   pnpm --dir ./agent_team_gui install
+   pnpm --dir ./dsh-agent-team-gui install
    ```
 
-   Expected: pnpm finishes successfully and creates or updates `agent_team_gui/node_modules`.
+   Expected: pnpm finishes successfully and creates or updates `dsh-agent-team-gui/node_modules`.
 
 2. Build the checkout before linking it into a profile:
 
    ```sh
-   pnpm --dir ./agent_team_gui run build
+   pnpm --dir ./dsh-agent-team-gui run build
    ```
 
    Expected: the command exits with status 0 and produces the runtime entry under
-   `agent_team_gui/lib/`.
+   `dsh-agent-team-gui/lib/`.
 
 3. Add the local bundle to the Web profile:
 
    ```sh
-   dsh plugin --profile web add -w ./agent_team_gui
+   dsh plugin --profile web add -w ./dsh-agent-team-gui
    ```
 
    Expected: pnpm reports `dsh-agent-team-gui` as added. dsh must not print the warning that the
@@ -134,16 +134,16 @@ A built tarball contains compiled output and therefore needs no install-script a
 1. Install dependencies and build:
 
    ```sh
-   pnpm --dir ./agent_team_gui install
-   pnpm --dir ./agent_team_gui run build
+   pnpm --dir ./dsh-agent-team-gui install
+   pnpm --dir ./dsh-agent-team-gui run build
    ```
 
-   Expected: both commands exit with status 0 and `agent_team_gui/lib/` exists.
+   Expected: both commands exit with status 0 and `dsh-agent-team-gui/lib/` exists.
 
 2. Create the tarball:
 
    ```sh
-   pnpm --dir ./agent_team_gui pack
+   pnpm --dir ./dsh-agent-team-gui pack
    ```
 
    Expected: pnpm prints the generated archive name, normally
@@ -152,7 +152,7 @@ A built tarball contains compiled output and therefore needs no install-script a
 3. Install that archive:
 
    ```sh
-   dsh plugin --profile web add -w ./agent_team_gui/dsh-agent-team-gui-0.1.0.tgz
+   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.1.0.tgz
    ```
 
    Expected: pnpm reports `dsh-agent-team-gui` as added without an `allowBuilds` prompt. If `pack`
@@ -174,14 +174,14 @@ monorepo checkout.
 
 You can also send this single sentence to a DeepSeek Harness agent that has terminal access:
 
-> Follow the README at https://github.com/toolclub/agent_team_gui and install the plugin into the
+> Follow the README at https://github.com/toolclub/dsh-agent-team-gui and install the plugin into the
 > DeepSeek Harness web profile; resolve and pin the current main commit SHA, configure pnpm
 > `allowBuilds` as documented, and verify with `dsh --profile web --dump-config`.
 
 1. Pin and install a reviewed commit:
 
    ```sh
-   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<commit-sha>
    ```
 
    Expected with pnpm 10 or later on the first attempt: installation may fail because pnpm blocks
@@ -203,7 +203,7 @@ You can also send this single sentence to a DeepSeek Harness agent that has term
 3. Re-run the same pinned install:
 
    ```sh
-   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<commit-sha>
    ```
 
    Expected: pnpm is allowed to run `prepare`, builds the package, and reports it as added.

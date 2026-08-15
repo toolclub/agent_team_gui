@@ -50,11 +50,11 @@
   "author": "DeepSeek Harness contributors",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/toolclub/agent_team_gui.git"
+    "url": "git+https://github.com/toolclub/dsh-agent-team-gui.git"
   },
-  "homepage": "https://github.com/toolclub/agent_team_gui#readme",
+  "homepage": "https://github.com/toolclub/dsh-agent-team-gui#readme",
   "bugs": {
-    "url": "https://github.com/toolclub/agent_team_gui/issues"
+    "url": "https://github.com/toolclub/dsh-agent-team-gui/issues"
   },
   "engines": {
     "node": ">=22.19"

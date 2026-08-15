@@ -69,28 +69,28 @@ Settings --> 全局 Agent/小队定义 ---------+
 
 ## 从本地目录安装
 
-在包含 `agent_team_gui` 的目录中逐条执行。
+在包含 `dsh-agent-team-gui` 的目录中逐条执行。
 
 1. 安装插件开发依赖：
 
    ```sh
-   pnpm --dir ./agent_team_gui install
+   pnpm --dir ./dsh-agent-team-gui install
    ```
 
-   预期：pnpm 成功结束，并创建或更新 `agent_team_gui/node_modules`。
+   预期：pnpm 成功结束，并创建或更新 `dsh-agent-team-gui/node_modules`。
 
 2. 链接进 profile 前构建 checkout：
 
    ```sh
-   pnpm --dir ./agent_team_gui run build
+   pnpm --dir ./dsh-agent-team-gui run build
    ```
 
-   预期：命令以状态 0 退出，并在 `agent_team_gui/lib/` 下生成运行时入口。
+   预期：命令以状态 0 退出，并在 `dsh-agent-team-gui/lib/` 下生成运行时入口。
 
 3. 把本地组合包加入 Web profile：
 
    ```sh
-   dsh plugin --profile web add -w ./agent_team_gui
+   dsh plugin --profile web add -w ./dsh-agent-team-gui
    ```
 
    预期：pnpm 报告已加入 `dsh-agent-team-gui`；dsh 不应打印包“declares no dsh.bundle”的警告。
@@ -120,16 +120,16 @@ Settings --> 全局 Agent/小队定义 ---------+
 1. 安装依赖并构建：
 
    ```sh
-   pnpm --dir ./agent_team_gui install
-   pnpm --dir ./agent_team_gui run build
+   pnpm --dir ./dsh-agent-team-gui install
+   pnpm --dir ./dsh-agent-team-gui run build
    ```
 
-   预期：两条命令均以状态 0 退出，且 `agent_team_gui/lib/` 存在。
+   预期：两条命令均以状态 0 退出，且 `dsh-agent-team-gui/lib/` 存在。
 
 2. 生成 tarball：
 
    ```sh
-   pnpm --dir ./agent_team_gui pack
+   pnpm --dir ./dsh-agent-team-gui pack
    ```
 
    预期：pnpm 打印生成的归档文件名，通常是 `dsh-agent-team-gui-0.1.0.tgz`。下一步请使用你的
@@ -138,7 +138,7 @@ Settings --> 全局 Agent/小队定义 ---------+
 3. 安装该归档：
 
    ```sh
-   dsh plugin --profile web add -w ./agent_team_gui/dsh-agent-team-gui-0.1.0.tgz
+   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.1.0.tgz
    ```
 
    预期：pnpm 报告已加入 `dsh-agent-team-gui`，且没有 `allowBuilds` 提示。若 `pack` 把归档写到
@@ -163,14 +163,14 @@ Git 依赖只包含源码，而不是预构建的发布产物。因此本仓库�
 
 你也可以直接对拥有终端权限的 DeepSeek Harness Agent 发送下面这一句话：
 
-> 根据 https://github.com/toolclub/agent_team_gui 仓库的 README，把插件安装到 DeepSeek Harness
+> 根据 https://github.com/toolclub/dsh-agent-team-gui 仓库的 README，把插件安装到 DeepSeek Harness
 > 的 web profile；解析 main 当前 commit 并锁定该 SHA，按 README 配置 pnpm `allowBuilds`，最后用
 > `dsh --profile web --dump-config` 验证安装。
 
 1. 锁定并安装已经审查的 commit：
 
    ```sh
-   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<commit-sha>
    ```
 
    pnpm 10 及以上版本首次执行时的预期：安装可能失败，因为 pnpm 会阻止 Git 依赖的 `prepare`
@@ -191,7 +191,7 @@ Git 依赖只包含源码，而不是预构建的发布产物。因此本仓库�
 3. 重新执行同一条锁定 commit 的安装命令：
 
    ```sh
-   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<commit-sha>
    ```
 
    预期：pnpm 获准运行 `prepare`，完成构建并报告包已加入。
