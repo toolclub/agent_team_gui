@@ -2,10 +2,38 @@
 
 [English](README.md) | [简体中文](README-zh.md)
 
-`dsh-agent-team-gui` 是 [DeepSeek Harness（dsh）](https://github.com/deepseek-ai/deepseek-harness)
-的实验性 Agent 与小队编排组合包。它保存可复用的 Agent 定义、把 Agent 组成小队，并让普通对话
-直接使用持久化的小队模式。内部由模型调用 `dispatch_to_squad` 工具。每个成员都可以使用不同的现有 dsh 模型路由与不同的工具
-allow/deny 列表。API key 始终由 dsh 的 provider 与凭据配置管理；本插件不会存储 API key。
+[![GitHub stars](https://img.shields.io/github/stars/toolclub/dsh-agent-team-gui?style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/toolclub/dsh-agent-team-gui?include_prereleases&style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/releases)
+[![MIT license](https://img.shields.io/github/license/toolclub/dsh-agent-team-gui?style=flat-square)](LICENSE)
+
+**为 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供持久化的多模型 Agent 小队。**
+每个成员可独立配置模型和工具策略；在 Settings 中保存可复用小队，然后在对话输入框旁选择小队，
+像平时一样发送消息即可协作。
+
+![在 DeepSeek Harness Settings 中管理持久化多模型小队](assets/team-settings.jpg)
+
+## 60 秒安装
+
+```sh
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.1.0
+dsh --profile web
+```
+
+随后打开 **Settings → 小队** 创建小队，在对话输入框旁选择它并开启**小队模式**。插件直接复用
+dsh 已配置的模型路由和凭据存储，绝不会保存 API key。
+
+| 你会得到什么 | 为什么有用 |
+| --- | --- |
+| 每个 Agent 独立的 provider/model 与工具策略 | 一个小队可组合强规划、快实现和严审核模型 |
+| 全局持久化的 Agent 与小队 | 建一次队伍，即可跨项目、跨对话复用 |
+| 固定顺序或模型规划顺序 | 固化可重复流程，或让主模型针对每次任务安排角色 |
+| 串行/并行执行与 spawn/fork/chain 上下文 | 按任务选择协作拓扑，不被单一模式限制 |
+| 父会话工具轨迹与成员子会话 | 看清每个成员做了什么，也能定位失败原因 |
+
+![在 DeepSeek Harness 对话中直接开启已保存的小队](assets/squad-mode.jpg)
+
+如果它确实解决了你的工作流，点一个 [GitHub Star](https://github.com/toolclub/dsh-agent-team-gui)
+能帮助更多 DeepSeek Harness 用户发现它；也欢迎提交真实小队配方和问题反馈。
 
 > [!WARNING]
 > dsh 与本插件目前都是 developer preview。本插件面向 dsh `>=0.1.0-rc.5 <0.2.0`，并要求

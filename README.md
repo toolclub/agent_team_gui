@@ -2,12 +2,39 @@
 
 [English](README.md) | [简体中文](README-zh.md)
 
-`dsh-agent-team-gui` is an experimental agent-and-squad orchestration bundle for
-[DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness). It stores reusable agent
-definitions, groups them into squads, and lets ordinary conversations run in a reusable squad
-mode. Internally, the model uses the `dispatch_to_squad` tool. Each member can use a different existing dsh model route and a different
-tool allow/deny list. API keys remain in dsh's provider and credentials configuration; this plugin
-never stores them.
+[![GitHub stars](https://img.shields.io/github/stars/toolclub/dsh-agent-team-gui?style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/stargazers)
+[![GitHub release](https://img.shields.io/github/v/release/toolclub/dsh-agent-team-gui?include_prereleases&style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/releases)
+[![MIT license](https://img.shields.io/github/license/toolclub/dsh-agent-team-gui?style=flat-square)](LICENSE)
+
+**Persistent multi-model agent squads for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
+Give every member its own model and tool policy, save reusable teams in Settings, then select a
+squad beside the composer and keep chatting normally.
+
+![Manage persistent multi-model squads in DeepSeek Harness Settings](assets/team-settings.jpg)
+
+## 60-second install
+
+```sh
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.1.0
+dsh --profile web
+```
+
+Then open **Settings → Teams**, create a squad, select it beside the conversation composer, and
+turn on **Squad mode**. The plugin uses your existing dsh model routes and credential store; it
+never stores API keys.
+
+| What you get | Why it matters |
+| --- | --- |
+| One provider/model and tool policy per agent | Mix a strong planner, fast implementer, and strict reviewer in one squad |
+| Global persistent agents and squads | Build a team once, then reuse it across projects and conversations |
+| Fixed or model-planned execution order | Pin a repeatable workflow, or let the lead model plan roles for each task |
+| Serial/parallel execution with spawn/fork/chain context | Match collaboration topology to the task instead of forcing one pattern |
+| Parent tool trace plus child sessions | Inspect which member did what and diagnose failures |
+
+![Enable a saved squad directly in a DeepSeek Harness conversation](assets/squad-mode.jpg)
+
+If this workflow is useful, a [GitHub Star](https://github.com/toolclub/dsh-agent-team-gui) helps
+other DeepSeek Harness users discover it. Bug reports and real squad recipes are equally welcome.
 
 > [!WARNING]
 > Both dsh and this plugin are developer previews. The plugin targets dsh `>=0.1.0-rc.5 <0.2.0`
