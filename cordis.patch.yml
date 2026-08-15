@@ -1,0 +1,10 @@
+# agent_team_gui is a Web-profile bundle. dsh-web-app already owns the storage,
+# Connection RPC and browser module rows this plugin consumes. `insert` never
+# deduplicates an existing id, so this layer inserts only its own unique row.
+- insert:
+    - id: agent-team-gui
+      name: 'dsh-agent-team-gui'
+      config:
+        defaultProvider: spawn
+        defaultExecutionMode: serial
+        defaultContextMode: spawn

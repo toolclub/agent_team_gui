@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "tsBuildInfoFile": "lib/tsconfig.test.tsbuildinfo",
+    "types": ["node"]
+  },
+  "include": [
+    "src/index.ts",
+    "src/spec.ts",
+    "src/types.ts",
+    "src/tools/**/*.ts",
+    "tests/**/*.ts",
+    "vitest.host.config.ts"
+  ]
+}
