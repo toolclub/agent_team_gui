@@ -106,7 +106,11 @@ All APIs below were verified against the actual codebase at `/Users/leizihao/wor
 Third-party Web UI extension IS supported via a real, documented mechanism — NOT fabrication. The path is a dual-faced cordis plugin:
 - **Host half**: Service class + tool registration + persistence (composed into the host plane via cordis.patch.yml).
 - **Browser half**: package.json declares `dsh.client: { platform: 'web', inject: [...] }` and `exports['./client']`; built with the shared `tsdown.client.ts` preset (or matching its `window.__ModuleLoader__.load({id, factory})` closure contract). ClientModuleRegistry (`packages/client/modules/src/index.ts:184-249`) auto-scans it into `window.__DSH_BOOT__` and serves `/plugins/<id>/client.js`.
-- **UI contribution**: `ctx.slots.inject('shell.overlay', () => ctx.slots.register({ name, id, order }, Component))` — the additive frame-wide floating list slot (`packages/client/ui-layout/src/client/index.ts:73-84`), explicitly intended for third-party surfaces. Do NOT register into `root` (single slot — shadows AppFrame).
+- **UI contribution**: the final interaction contributes global CRUD through `settings.section` and
+  per-conversation mode controls through `conversation.input.right`, both registered only after
+  their declarations with `ctx.slots.inject(...)`. The verified `shell.overlay` slot remains an
+  available third-party surface but is not used by the revised Settings/composer design. Do NOT
+  register into `root` (single slot — shadows AppFrame).
 
 **Degraded path**: The host half (Service + tool + persistence, no `dsh.client` declaration) is independently shippable and independently useful. The browser half can be added later by declaring `dsh.client`, adding the roster row, and building the client bundle. The slot system degrades gracefully — a slot with no registrations renders empty. Do NOT self-serve a separate frontend on another port (forbidden by `packages/bundle/web-app/src/index.ts:95-106`).
 
@@ -157,9 +161,13 @@ Three modes, selected per-dispatch:
 
 Each `SubagentResult` (`packages/subagent/subagent/src/types.ts:219`) carries `output: ContentBlock[]` and `stopReason`. The tool's `execute()` collects all results into a canonical JSON value:
 ```
-{ squadId, task, executionMode, members: [{ agentId, output, stopReason }], stopReason: 'completed'|'partial' }
+{ dispatchId, squadId, squadName, task, executionMode, contextMode,
+  status: 'completed'|'partial'|'failed',
+  members: [{ agentId, agentName, runId?, childId?, status, error?, stopReason?, output }] }
 ```
-This value is validated against the tool's `output.schema`, frozen, and passed to `output.render()` for the model.
+This value is validated against the tool's `output.schema` and rendered as complete canonical JSON
+text. The durable `tool/result` therefore retains the full member results; the execution-local
+canonical value alone would not be persisted.
 
 ### Rationale: Direct `ctx.subagents.start()` over `ctx.workflowEngine.start()`
 
@@ -200,8 +208,8 @@ dsh-agent-team-gui/
 │   ├── tools/
 │   │   └── dispatch-to-squad.ts     # defineTool for dispatch_to_squad
 │   └── client/
-│       ├── index.ts                 # BROWSER HALF: inject + apply, slots.register into shell.overlay
-│       └── AgentTeamDashboard.tsx   # CRUD + current-conversation dispatch panel
+│       ├── index.ts                 # BROWSER HALF: Settings page + conversation input controls
+│       └── AgentTeamDashboard.tsx   # Settings CRUD + conversation squad selection/toggle
 ├── tests/service.spec.ts            # CRUD, resolution, orchestration and failure tests
 ├── README.md
 ├── README-zh.md
@@ -365,7 +373,14 @@ The `provider`/`model` fields are just two strings — no API key material. Keys
 ```typescript
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
-import type { AgentId, SquadId, AgentRecord, SquadRecord } from './types.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type {
+  AgentId,
+  SquadId,
+  AgentRecord,
+  SessionSquadModeRecord,
+  SquadRecord,
+} from './types.ts'
 
 const agentRecordSchema = z.object({
   name: z.string(),
@@ -379,7 +394,14 @@ const agentRecordSchema = z.object({
 const squadRecordSchema = z.object({
   name: z.string(),
   members: z.array(z.string()),
-  collabNote: z.string(),
+  collabNote: z.string().optional(),
+  executionOrder: z.array(z.string()).optional(),
+  executionMode: z.enum(['serial', 'parallel']).optional(),
+  contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
+})
+
+const sessionSquadModeSchema = z.object({
+  squadId: z.string(),
 })
 
 export const agentTeamDomainSpec = defineDomain({
@@ -388,10 +410,11 @@ export const agentTeamDomainSpec = defineDomain({
   tables: {
     agents: domainTable<AgentId, AgentRecord>(agentRecordSchema),
     squads: domainTable<SquadId, SquadRecord>(squadRecordSchema),
+    session_modes: domainTable<SessionId, SessionSquadModeRecord>(sessionSquadModeSchema),
   },
 })
 ```
-Mirrors `packages/workspace/workspace/src/index.ts:119-124` and `packages/feedback/message-feedback/src/index.ts:173-181`. One domain, two tables (simpler, shared write chain, matches workspace/message-feedback one-domain-per-plugin pattern).
+Mirrors `packages/workspace/workspace/src/index.ts:119-124` and `packages/feedback/message-feedback/src/index.ts:173-181`. One domain owns three tables: global agent definitions, global squad definitions, and each session's enabled squad mode. Adding `session_modes` is backward-compatible for the bundled storage backends, so the domain remains at version 0 (storage-domain currently exposes no migration API).
 
 #### Observability decision
 
@@ -407,6 +430,7 @@ Extends P1 stub. In `[Service.init]`:
 2. `this.ctx.effect(() => () => domain.close(), 'agent_team_gui.domainClose')` (disposer, `fiber.ts:415`)
 3. `this.agents = domain.table('agents')` (`domain.ts:108`)
 4. `this.squads = domain.table('squads')`
+5. `this.sessionModes = domain.table('session_modes')`
 
 CRUD methods on the service:
 - `createAgent(id, record)` → `this.agents.put(id, record)` (`domain.ts:72`)
@@ -436,14 +460,10 @@ parameters: {
 ```
 
 **Output schema** (ValueSchemaSpec, `packages/core/tools/src/schema.ts:85`):
-```typescript
-output: {
-  schema: { type: 'object', properties: { squadId: {type:'string'}, task:{type:'string'}, executionMode:{type:'string'}, members: { type: 'array', items: { type: 'object', properties: { agentId:{type:'string'}, output:{type:'string'}, stopReason:{type:'string'} } } }, stopReason: {type:'string'} } },
-  render(args, value) {
-    return [{ type: 'text', text: `Squad ${value.squadId} dispatched (${value.executionMode}): ${value.members.length} members. ${value.stopReason === 'completed' ? 'All completed.' : 'Some members did not complete.'}` }]
-  },
-}
-```
+The output schema covers the full dispatch and every member's run/child identifiers, status,
+error, stop reason, and output. `output.render()` serializes that entire canonical value to JSON
+text instead of presenting only a summary, because the successful execution-local value is not a
+durable session event.
 
 **execute(args, exec)** (`packages/core/tools/src/index.ts:404` for ToolRunContext):
 1. `const parent = exec.agent` — required (throw if undefined, per tool-subagent line 370-373).
@@ -482,38 +502,57 @@ Or simply `this.ctx.tools.register(defineTool({...}))` — the disposer is auto-
 
 ### Phase P4: UI (Browser Half) + Bundle/Profile Wiring
 
-**Goal**: Squad dashboard panel in the dsh Web UI via `shell.overlay` slot.
+**Revised interaction goal (implemented and runtime-verified)**: Agent and squad
+definitions are global, durable resources managed under Settings. A conversation selects one squad
+and explicitly toggles collaboration on or off. With collaboration enabled, the ordinary composer
+Send path activates the selected session mode and instructs the lead model to use the squad, with
+the result returned through the normal conversation flow; there is no second task box or separate
+Dispatch button. A squad may pin a fixed member order. If it does not, the model plans member
+assignments and execution order for that request. The model-facing
+`dispatch_to_squad` tool remains the natural-language path.
 
 #### `src/client/index.ts`
 ```typescript
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { SquadDashboard } from './SquadDashboard.tsx'
+import { TeamComposerControl, TeamSettingsPage } from './AgentTeamDashboard.tsx'
 
-export const inject = ['slots', 'sessions', 'locale']
+export const inject = ['slots', 'connection']
 
 export function apply(ctx: ClientContext): void {
-  ctx.slots.inject(
-    'shell.overlay',
-    () => ctx.slots.register({
-      name: 'shell.overlay',
-      id: 'agent-team-gui',
-      order: 100,
-    }, SquadDashboard),
-  )
+  ctx.slots.inject('settings.section', () => ctx.slots.register({
+    name: 'settings.section',
+    id: 'agent-teams',
+    label: () => 'Teams',
+  }, TeamSettingsPage))
+
+  ctx.slots.inject('conversation.input.right', () => ctx.slots.register({
+    name: 'conversation.input.right',
+    id: 'agent-team-gui-mode',
+  }, TeamComposerControl))
 }
 ```
-Follows `packages/client/ui-jobs/src/client/index.ts` exactly: named `inject` + `apply(ctx)`, `ctx.slots.inject(key, () => ctx.slots.register({...}, Component))`.
+Both contributions wait for the shipped slot declaration through `ctx.slots.inject()` before
+registering.
 
-#### `src/client/SquadDashboard.tsx`
+#### `src/client/AgentTeamDashboard.tsx`
 React component that:
-- Lists squads and agents (data fetched via the host service or client-side session/store hooks).
-- Provides create/edit/delete UI for agents and squads.
-- Shows the direct RPC dispatch aggregate in the overlay.
-- Model picker: calls host RPC to enumerate `ctx.llm.listProviders()` + `ctx.llm.listModels(provider)` (these run on the host; the browser half calls through the connection/API gateway).
+- Contributes global agent/squad CRUD under Settings.
+- Contributes a per-conversation squad selector and collaboration toggle near the composer.
+- Uses ordinary Send as the collaboration trigger instead of owning another task box/button.
+- Lets a squad pin a fixed member order; an unset order delegates assignments/order to the model.
+- Model picker: calls the dedicated host Connection RPC, which enumerates
+  `ctx.llm.listProviders()` + `ctx.llm.listModels(provider)`; the browser never accesses host
+  services directly.
 
-Confirmed: browser CRUD/snapshot/dispatch uses the dedicated `/agent-team-gui` Connection RPC
-channel with loopback authority. The host reads storage and `ctx.llm`; browser code never imports a
-host service or calls a bare unvalidated endpoint.
+The dedicated `/agent-team-gui` Connection RPC with loopback authority remains the verified
+Settings CRUD/snapshot seam and now provides `mode/get`/`mode/set` per session. The host reads
+storage and `ctx.llm`; browser code never imports a host service or calls a bare unvalidated
+endpoint. An enabled mode contributes a dynamic system prompt that asks the lead model to call
+`dispatch_to_squad` exactly once, choose `memberOrder` when the squad has no fixed
+`executionOrder`, and summarize the aggregate in the normal assistant response. This is
+best-effort model instruction because the current GenerateOptions surface has no `toolChoice`
+control. Runtime verification confirmed the Settings page, persistent member/squad CRUD,
+fixed-order reordering, per-conversation selector/toggle, and mode restoration after reload.
 
 #### `tsdown.config.ts`
 Confirmed: the shared dsh preset is monorepo-internal, so the package carries a self-contained
@@ -529,7 +568,8 @@ The full browser half ships in P4; there is no degraded host-only release mode f
 ### Phase P5: README + LICENSE
 
 #### `README.md`
-- Package description: agent team GUI plugin for dsh — define agents and squads, dispatch tasks with serial/parallel execution.
+- Package description: agent team GUI plugin for dsh — manage global persistent squads in Settings,
+  select/toggle a squad per conversation, and collaborate through ordinary Send.
 - Installation: `dsh plugin --profile <name> add @deepseek-ai/dsh-agent-team-gui` (or `add .` from a built checkout).
 - If git-hosted with a `prepare` script: document the `allowBuilds` key copy step for `pnpm-workspace.yaml` (per `reference/README.md:51`).
 - Configuration: `cordis.patch.yml` config fields (`defaultProvider`, `defaultExecutionMode`, `defaultContextMode`).
@@ -553,12 +593,13 @@ Match the dsh repo's license (check `LICENSE` file at repo root).
 - **Per-agent route at dispatch**: `SubagentStartRequest.agentOptions = { provider, model, maxTokens }` (`subagent/src/types.ts:119`); `resolveChildAgentOptions` inherits parent route and applies overrides (`subagent/src/child-agent.ts:68`).
 - **Tool range per agent**: `SubagentStartRequest.toolFilter` (`subagent/src/types.ts:100`, ToolRestriction `{allow?,deny?}`); applied via `applyChildComposition` (`subagent/src/child-agent.ts:163`) and `ctx.tools.restrict()` (`tools/src/index.ts:1071`).
 
-### FR-2: Persist agent & squad definitions across restart
+### FR-2: Persist agent/squad definitions and per-session squad modes across restart
 - `ctx.storageDomain.open(spec)` (`storage-domain/src/index.ts:100`) — async, in `[Service.init]`.
-- `defineDomain({ name:'agent_team_gui', version:0, tables:{agents,squads} })` (`spec.ts:79`).
+- `defineDomain({ name:'agent_team_gui', version:0, tables:{agents,squads,session_modes} })` (`spec.ts`).
 - `domainTable<K,V>(zodSchema)` (`spec.ts:63`).
-- `Domain.table('agents')` / `.table('squads')` (`domain.ts:108`).
+- `Domain.table('agents')` / `.table('squads')` / `.table('session_modes')` (`domain.ts:108`).
 - CRUD: `put(key, value)` (`domain.ts:72`), `get(key)` sync (`domain.ts:48`), `delete(key)` (`domain.ts:80`), `update(key, fn)` atomic RMW (`domain.ts:89`), `entries()` (`domain.ts:55`).
+- `mode/get` and `mode/set` resolve the current selection from `SessionId` to `SquadId`; deleting a squad and replace-mode import remove dangling session selections.
 - `Domain.close()` via `ctx.effect(() => () => domain.close())` (`domain.ts:118`, `fiber.ts:415`).
 - Pattern: `packages/workspace/workspace/src/index.ts:92,119-124`, `packages/feedback/message-feedback/src/index.ts:150-151,173-181`.
 - Storage wiring: `packages/bundle/web-app/cordis.patch.yml:51-62` (storage + storage-json + storage-domain).
@@ -589,7 +630,9 @@ Match the dsh repo's license (check `LICENSE` file at repo root).
 - **Session events**: `ctx.on('session/event', ...)` (`session/src/index.ts:43`) — real-time append feed.
 - **Derived state (optional)**: `ctx.sessionProjections.register(definition)` (`session-projection/src/index.ts:171`) — init/apply/view pure functions folded over session events.
 - **Storage updates**: `ctx.on('domain/changed', ...)` (`storage-domain/src/events.ts:46`) — refresh UI cache after put/delete.
-- **UI**: `ctx.slots.inject('shell.overlay', () => ctx.slots.register({...}, SquadDashboard))` (`ui-layout/src/client/index.ts:73-84`, `runtime/src/client/slots.ts:143-205,464-471`).
+- **UI**: `ctx.slots.inject('settings.section', ...)` owns global CRUD and
+  `ctx.slots.inject('conversation.input.right', ...)` owns the session selector/toggle; both use the
+  runtime slot registration contract (`runtime/src/client/slots.ts:143-205,464-471`).
 - **Per-message chat node (optional)**: `ctx.conversationEvents.register(definition)` + keyed `ctx.slots.register({name:'conversation.chat.node', key}, Component)` (`docs/cookbook/adding-a-conversation-node.md:188`).
 
 ---

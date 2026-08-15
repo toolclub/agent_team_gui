@@ -31,6 +31,11 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
           },
         },
       },
+      memberOrder: {
+        type: 'array',
+        description: 'When the squad has no fixed executionOrder, a complete unique permutation of every member id. Controls serial start order and parallel result order.',
+        items: { type: 'string' },
+      },
       executionMode: {
         type: 'string',
         enum: ['serial', 'parallel'],
@@ -74,9 +79,12 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
           },
         },
       },
+      // Durable tool/result events intentionally omit the execution-local
+      // canonical value. Render the full value so the parent model can
+      // synthesize member output and replay retains every trace field.
       render: (_args, value) => [{
         type: 'text',
-        text: `Squad ${value.squadName} finished ${value.status}: ${value.members.filter(member => member.status === 'completed').length}/${value.members.length} members completed.`,
+        text: JSON.stringify(value, null, 2),
       }],
     },
     isConcurrencySafe: () => true,
@@ -90,6 +98,7 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
         ...args.assignments === undefined ? {} : {
           assignments: args.assignments.map(item => ({ agentId: AgentId(item.agentId), task: item.task })),
         },
+        ...args.memberOrder === undefined ? {} : { memberOrder: args.memberOrder.map(AgentId) },
         ...args.executionMode === undefined ? {} : { executionMode: args.executionMode },
         ...args.contextMode === undefined ? {} : { contextMode: args.contextMode },
       }, exec.agent, exec.signal)

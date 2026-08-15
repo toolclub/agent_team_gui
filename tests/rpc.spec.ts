@@ -80,6 +80,37 @@ describe('agent team RPC handler', () => {
     expect(missingMember.error.message).toContain('INVALID_MEMBERS')
   })
 
+  it('round-trips squad execution and context defaults through RPC', async () => {
+    const state = await populate()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+    const updated = await call<{ updated: boolean }>(handler, 'squad/update', {
+      id: squadId,
+      record: {
+        name: 'Delivery',
+        members: [researcherId, writerId, 'reviewer'],
+        collabNote: 'Cross-check.',
+        executionOrder: ['reviewer', writerId, researcherId],
+        executionMode: 'serial',
+        contextMode: 'chain',
+      },
+    }, signal())
+
+    expect(updated).toEqual({ ok: true, value: { updated: true } })
+    expect(state.service.getSquad(squadId)).toMatchObject({
+      executionOrder: ['reviewer', writerId, researcherId],
+      executionMode: 'serial',
+      contextMode: 'chain',
+    })
+    const snapshot = await call<SnapshotValue & { squads: Array<Record<string, unknown>> }>(
+      handler, 'snapshot', {}, signal(),
+    )
+    expect(snapshot.ok && snapshot.value.squads[0]).toMatchObject({
+      executionOrder: ['reviewer', writerId, researcherId],
+      executionMode: 'serial',
+      contextMode: 'chain',
+    })
+  })
+
   it('rejects unknown endpoints and surfaces cancellation', async () => {
     const state = createService()
     const handler = createAgentTeamRpcHandler(state.ctx, state.service)
@@ -138,6 +169,22 @@ describe('agent team RPC handler', () => {
     if (!result.ok) return
     expect(result.value.status).toBe('completed')
     expect(result.value.members).toHaveLength(2)
+  })
+
+  it('persists, reads, and disables session squad mode through RPC', async () => {
+    const state = await populate()
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const enabled = await call<{ mode: { sessionId: string; squadId: string; squadName: string } | null }>(
+      handler, 'mode/set', { sessionId: 'conversation', squadId }, signal(),
+    )
+    expect(enabled).toEqual({ ok: true, value: { mode: {
+      sessionId: 'conversation', squadId, squadName: 'Delivery',
+    } } })
+    await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
+      .resolves.toEqual(enabled)
+    await expect(call(handler, 'mode/set', { sessionId: 'conversation', squadId: null }, signal()))
+      .resolves.toEqual({ ok: true, value: { mode: null } })
   })
 
   it('exports and imports definitions through the endpoint boundary', async () => {

@@ -1,5 +1,6 @@
 import type { Branded } from '@deepseek-ai/dsh-brand'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import type { SessionId } from '@deepseek-ai/dsh-session'
 
 /** Durable identifier owned by an agent definition. */
 export type AgentId = Branded<'AgentTeamAgentId'>
@@ -46,6 +47,24 @@ export interface SquadRecord {
   readonly name: string
   readonly members: AgentId[]
   readonly collabNote?: string
+  /** Complete fixed serial order. Omission lets dispatch assignments choose order. */
+  readonly executionOrder?: AgentId[]
+  /** Squad-specific default; plugin config is used when omitted. */
+  readonly executionMode?: 'serial' | 'parallel'
+  /** Squad-specific default; plugin config is used when omitted. */
+  readonly contextMode?: 'spawn' | 'fork' | 'chain'
+}
+
+/** Durable per-session selection that enables normal-conversation squad mode. */
+export interface SessionSquadModeRecord {
+  readonly squadId: SquadId
+}
+
+/** Resolved session mode returned to host/RPC callers. */
+export interface SessionSquadModeView {
+  readonly sessionId: SessionId
+  readonly squadId: SquadId
+  readonly squadName: string
 }
 
 /** One model-selected member assignment. Omitted members receive the shared task. */
@@ -59,6 +78,8 @@ export interface SquadDispatchRequest {
   readonly squadId: SquadId
   readonly task: string
   readonly assignments?: readonly SquadAssignment[]
+  /** Complete per-dispatch permutation used only when the squad has no fixed order. */
+  readonly memberOrder?: readonly AgentId[]
   readonly executionMode?: 'serial' | 'parallel'
   readonly contextMode?: 'spawn' | 'fork' | 'chain'
 }
@@ -104,6 +125,9 @@ export interface SquadExportItem {
   readonly name: string
   readonly members: AgentId[]
   readonly collabNote?: string
+  readonly executionOrder?: AgentId[]
+  readonly executionMode?: 'serial' | 'parallel'
+  readonly contextMode?: 'spawn' | 'fork' | 'chain'
 }
 
 /** Versioned, self-describing dump of every durable agent/squad definition. */

@@ -29,6 +29,9 @@ const squadInputSchema = z.object({
   name: z.string().trim().min(1),
   members: z.array(idSchema),
   collabNote: z.string().optional(),
+  executionOrder: z.array(idSchema).optional(),
+  executionMode: z.enum(['serial', 'parallel']).optional(),
+  contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
 }).strict()
 const assignmentSchema = z.object({ agentId: idSchema, task: z.string().min(1) }).strict()
 const dispatchInputSchema = z.object({
@@ -36,6 +39,7 @@ const dispatchInputSchema = z.object({
   squadId: idSchema,
   task: z.string().trim().min(1),
   assignments: z.array(assignmentSchema).min(1).optional(),
+  memberOrder: z.array(idSchema).min(1).optional(),
   executionMode: z.enum(['serial', 'parallel']).optional(),
   contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
 }).strict()
@@ -64,6 +68,9 @@ function squadRecord(input: SquadInput) {
     name: input.name,
     members: input.members.map(AgentId),
     ...(input.collabNote === undefined ? {} : { collabNote: input.collabNote }),
+    ...(input.executionOrder === undefined ? {} : { executionOrder: input.executionOrder.map(AgentId) }),
+    ...(input.executionMode === undefined ? {} : { executionMode: input.executionMode }),
+    ...(input.contextMode === undefined ? {} : { contextMode: input.contextMode }),
   }
 }
 
@@ -71,6 +78,9 @@ const snapshotSchema = z.object({
   agents: z.array(z.object({ id: z.string(), ...agentInputSchema.shape })),
   squads: z.array(z.object({
     id: z.string(), name: z.string(), members: z.array(z.string()), collabNote: z.string(),
+    executionOrder: z.array(z.string()).optional(),
+    executionMode: z.enum(['serial', 'parallel']).optional(),
+    contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
   })),
   models: z.array(z.object({
     provider: z.string(),
@@ -160,6 +170,19 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
           const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
           return success({ deleted: await service.deleteSquad(SquadId(payload.id)) })
         }
+        case 'mode/get': {
+          const payload = z.object({ sessionId: idSchema }).strict().parse(rawPayload)
+          return success({ mode: service.getSessionSquadMode(SessionId(payload.sessionId)) ?? null })
+        }
+        case 'mode/set': {
+          const payload = z.object({ sessionId: idSchema, squadId: idSchema.nullable() }).strict().parse(rawPayload)
+          return success({
+            mode: await service.setSessionSquadMode(
+              SessionId(payload.sessionId),
+              payload.squadId === null ? undefined : SquadId(payload.squadId),
+            ) ?? null,
+          })
+        }
         case 'export': {
           emptySchema.parse(rawPayload)
           return success(await service.exportDefinitions())
@@ -190,6 +213,7 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
             ...payload.assignments === undefined ? {} : {
               assignments: payload.assignments.map(item => ({ agentId: AgentId(item.agentId), task: item.task })),
             },
+            ...payload.memberOrder === undefined ? {} : { memberOrder: payload.memberOrder.map(AgentId) },
             ...payload.executionMode === undefined ? {} : { executionMode: payload.executionMode },
             ...payload.contextMode === undefined ? {} : { contextMode: payload.contextMode },
           }, parent, signal))

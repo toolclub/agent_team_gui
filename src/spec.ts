@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { defineDomain, domainTable } from '@deepseek-ai/dsh-storage-domain'
-import type { AgentExportItem, AgentId, AgentRecord, AgentTeamExportDocument, SquadExportItem, SquadId, SquadRecord } from './types.ts'
+import type { SessionId } from '@deepseek-ai/dsh-session'
+import type { AgentExportItem, AgentId, AgentRecord, AgentTeamExportDocument, SessionSquadModeRecord, SquadExportItem, SquadId, SquadRecord } from './types.ts'
 
 /** Shared agent field validation; reused by the durable table and the export document. */
 const agentFields = z.object({
@@ -25,6 +26,9 @@ const squadFields = z.object({
   name: z.string().trim().min(1),
   members: z.array(z.string().min(1).transform(value => value as AgentId)),
   collabNote: z.string().optional(),
+  executionOrder: z.array(z.string().min(1).transform(value => value as AgentId)).optional(),
+  executionMode: z.enum(['serial', 'parallel']).optional(),
+  contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
 }).strict()
 
 /** Durable squad validation, also applied before service writes. */
@@ -50,12 +54,20 @@ export const agentTeamExportSchema = z.object({
   squads: z.array(squadExportItemSchema),
 }).strict() as unknown as z.ZodType<AgentTeamExportDocument>
 
+/** Durable session-to-squad mode selection. */
+export const sessionSquadModeSchema = z.object({
+  squadId: z.string().min(1).transform(value => value as SquadId),
+}).strict() as unknown as z.ZodType<SessionSquadModeRecord>
+
 /** One versioned domain containing both definition tables. */
 export const agentTeamDomainSpec = defineDomain({
   name: 'agent_team_gui',
+  // Adding a table is backward-compatible for both bundled backends. Keep v0:
+  // storage-domain intentionally rejects version bumps and has no migration API.
   version: 0,
   tables: {
     agents: domainTable<AgentId, AgentRecord>(agentRecordSchema),
     squads: domainTable<SquadId, SquadRecord>(squadRecordSchema),
+    session_modes: domainTable<SessionId, SessionSquadModeRecord>(sessionSquadModeSchema),
   },
 })

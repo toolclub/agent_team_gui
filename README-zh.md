@@ -3,8 +3,8 @@
 [English](README.md) | [简体中文](README-zh.md)
 
 `dsh-agent-team-gui` 是 [DeepSeek Harness（dsh）](https://github.com/deepseek-ai/deepseek-harness)
-的实验性 Agent 与小队编排组合包。它保存可复用的 Agent 定义、把 Agent 组成小队，并允许模型通过
-`dispatch_to_squad` 工具分派任务。每个成员都可以使用不同的现有 dsh 模型路由与不同的工具
+的实验性 Agent 与小队编排组合包。它保存可复用的 Agent 定义、把 Agent 组成小队，并让普通对话
+直接使用持久化的小队模式。内部由模型调用 `dispatch_to_squad` 工具。每个成员都可以使用不同的现有 dsh 模型路由与不同的工具
 allow/deny 列表。API key 始终由 dsh 的 provider 与凭据配置管理；本插件不会存储 API key。
 
 > [!WARNING]
@@ -15,40 +15,40 @@ allow/deny 列表。API key 始终由 dsh 的 provider 与凭据配置管理；�
 ## 核心差异
 
 小队不必共享同一个模型配置。每个 Agent 都能独立选择 dsh 中已有的 provider/model 路由、
-`maxTokens` 和工具 allow/deny 策略；这些 Agent 可保存为可复用定义，再组合为不同小队。派单时可选择
-串行或并行执行，以及 `spawn`、`fork` 或串行专用的 `chain` 上下文模式，并通过 Web 面板管理和观察结果。
+`maxTokens` 和工具 allow/deny 策略；这些 Agent 在 Settings 中保存为全局可复用定义，再组合为持久
+小队。每个对话可选择一个小队并开启协作；开启后，普通的“发送”就进入协作流程。小队可固定成员
+顺序；未固定时，由模型根据任务规划分工与执行顺序。
 
 ## 状态与架构
 
 ```text
-用户对话
-   |
-   v
-dispatch_to_squad（模型工具）
-   |
-   +-- 串行 / 并行执行
-   +-- spawn / fork / chain 上下文
-   |
-   +--> Agent A --> 已配置的 dsh provider/model
-   +--> Agent B --> 已配置的 dsh provider/model
-   `--> Agent C --> 已配置的 dsh provider/model
-              |
-              `--> 聚合结果 + append-only 会话事件
+Settings --> 全局 Agent/小队定义 ---------+
+对话 ------> 按 session 保存的小队模式 ----+--> dsh storage-domain --> JSON 后端
+                                           |
+对话小队选择器 + 协作 toggle
+                                           |
+普通发送 --> 已设置固定成员顺序 -----------+
+        `-> 未设置顺序时由模型规划分工/顺序
+                                           |
+                 Agent A / Agent B / Agent C
+                                           |
+              assistant 回复 + 可追溯子会话
 
-Agent 与小队定义 --> dsh storage-domain --> JSON 后端
-
-dsh Web 输入框旁“小队”按钮 --> client 面板 --> loopback Connection RPC --> 宿主服务
+自然语言要求 --> dispatch_to_squad（模型工具）--> 同一小队 runtime
 ```
 
 本包包含 Web client、仅 loopback 可用的 Connection RPC、宿主服务、持久化注册表和模型派单工具。
-输入框旁的**小队**按钮会打开 **Agent 小队**面板，可在其中管理定义并向当前打开的对话派单。
-provider/model 选项来自 dsh 已有的模型配置。
+**Settings → 小队**管理全局定义。每个对话都有小队选择器与协作开关；选中小队并开启
+协作后，用户仍使用普通输入框发送，不需要单独的派单表单。provider/model 选项来自 dsh 已有的
+模型配置。
 
 当前能力：
 
-- 通过 dsh `storage-domain` 持久化 Agent 与小队记录。
-- 用 Web 表单创建、编辑、删除 Agent 与小队，并从已配置模型中选择路由。
-- 输入框旁小队按钮，以及面向当前对话的直接派单面板。
+- 通过 dsh `storage-domain` 持久化 Agent/小队记录与逐 session 的小队模式选择。
+- 在 Settings 中创建、编辑、删除全局 Agent 与小队，并从已配置模型中选择路由。
+- 每个对话独立选择小队并显式开启协作；开启后，普通发送会启用所选小队模式并指示主模型协作，
+  关闭后恢复普通单 Agent 发送。
+- 小队可选固定成员顺序；未固定时由模型依据请求决定成员分工与执行顺序。
 - 每个 Agent 独立的 `{ provider, model, maxTokens? }` 路由与工具限制；不存储 API key。
 - 模型可调用 `dispatch_to_squad`，可选显式指定每个 Agent 的任务。
 - 支持串行或并行，以及 `spawn`、`fork`、串行专用的 `chain` 上下文模式。
@@ -109,7 +109,8 @@ provider/model 选项来自 dsh 已有的模型配置。
    dsh --profile web
    ```
 
-   预期：dsh 正常启动，对话输入框旁出现**小队**按钮。若启用了宿主 info 级日志，日志还会包含
+   预期：dsh 正常启动，**Settings → 小队**可用，并且对话中出现小队选择器与协作开关。
+   若启用了宿主 info 级日志，日志还会包含
    `[agent-team-gui] durable registry and dispatch_to_squad ready`。
 
 ## 从 tarball 安装
@@ -247,9 +248,22 @@ Agent 记录字段：
 | `maxTokens` | 否 | 单 Agent token 上限。 |
 | `toolScope.allow` / `toolScope.deny` | 否 | 应用于该子 Agent 的 dsh 工具名限制。 |
 
-小队记录包含 `name`、可选的协作说明与有序的 Agent ID 列表。一个 Agent 可以属于多个小队。
-**Agent 小队**面板通过仅 loopback 可用的宿主 RPC 编辑这些记录。插件只保存路由名称，不保存或
-复制 provider 密钥。
+小队记录字段：
+
+| 字段 | 必填 | 含义 |
+|---|---|---|
+| `name` | 是 | Settings 与对话选择器使用的全局显示名称。 |
+| `members` | 是 | 小队可用且不重复的 Agent ID。 |
+| `collabNote` | 否 | 加入成员 prompt 的协作说明。 |
+| `executionOrder` | 否 | 包含全部成员的固定完整顺序；省略时由主模型规划。 |
+| `executionMode` | 否 | 小队默认值：`serial` 或 `parallel`；省略时回退到插件配置。 |
+| `contextMode` | 否 | 小队默认值：`spawn`、`fork` 或串行专用 `chain`；省略时回退到插件配置。 |
+
+小队记录包含 `name`、可选协作说明、成员列表、可选 `executionOrder`，以及可选的
+`executionMode`/`contextMode` 默认值。一个 Agent 可以属于多个小队。**Settings → 小队**通过仅
+loopback 可用的宿主 RPC 编辑这些全局记录。固定的 `executionOrder` 必须恰好包含所有成员且不重复；
+未固定时，主模型规划分工，并在派单时给出完整 `memberOrder`。插件只保存路由名称，不保存或复制
+provider 密钥。
 
 ### 同进程 Service API
 
@@ -294,28 +308,37 @@ TypeScript 签名以包导出的声明文件为准。
 ID，也可以是小队准确名称（不区分大小写）；若名称重复，必须使用持久化 ID。工具参数为
 `squadId`、`task`，以及可选的 `assignments: [{ agentId, task }]`、`executionMode` 和
 `contextMode`。
+当小队没有固定 `executionOrder` 时，还可传 `memberOrder`；一旦传入，它必须完整、无重复地排列
+所有成员。小队已有固定顺序时，单次调用不能覆盖它。工具会把完整 canonical JSON 结果渲染为文本，
+其中包含每个成员的 `runId`、`childId`、状态、错误、stop reason 和输出，供主模型生成最终汇总。
 
-### 对话旁按钮派单
+### 对话协作开关
 
-1. 启动 `dsh --profile web`，打开一个对话，点击输入框旁的**小队**。
-2. 在 **Agent 小队**中创建 Agent。从 dsh Settings 已配置路由中选择 provider/model；可选填写
-   max tokens 与逗号分隔的允许/禁用工具。
-3. 创建小队、勾选成员，并可选填写协作说明。
-4. 在**派发当前任务**中选择小队、执行方式和上下文方式，填写任务后点击**派单**。
+1. 启动 `dsh --profile web`，打开 **Settings → 小队**。
+2. 创建 Agent，从 dsh 已配置路由中选择 provider/model；可选填写 max tokens 与逗号分隔的
+   允许/禁用工具。
+3. 创建全局小队、勾选成员、可选填写协作说明，并可选固定成员顺序。不设置顺序时由模型规划分工
+   与顺序。
+4. 打开任意对话，在小队选择器中选择**发布审查小队**，并开启小队协作。
+5. 在普通输入框填写任务后点击**发送**。关闭开关后，该对话恢复普通单 Agent 发送。
 
 ```text
 用户输入：检查这次修改并给出发布建议。
-用户选择：发布审查小队 -> 并行 -> 派单
+对话控制：发布审查小队 -> 开启协作
+用户选择：发送
 
-面板：[client 使用当前 live 对话作为 parent，请求宿主派单]
-面板：completed — Reviewer：completed；Test agent：completed
+助手：[选中的小队以当前对话为 parent 开始协作]
+助手：发布审查小队建议…… Reviewer：…… Test agent：……
 ```
 
-直接结果显示在 overlay 中；按钮派单不会合成一条 assistant 对话消息。
+小队选择属于当前对话，且模式会持久化；逐 session 模式和全局 Agent/小队定义都会在重启后保留。
+删除已选小队时，受影响的 session 模式会自动关闭。发送时不需要第二个任务框或单独的“派单”按钮。
+内部会注入动态 system prompt，指示主模型调用一次 `dispatch_to_squad`，再把结果汇总为正常
+assistant 回复。这属于 best-effort 模型指令，而不是 API 层硬性强制的工具调用；详见“已知限制”。
 
 ### 定义导出/导入
 
-**Agent 小队**面板可以把全部持久化定义导出/恢复为一个 JSON 文档。
+**Settings → 小队**可以把全部持久化定义导出/恢复为一个 JSON 文档。
 
 - **导出**下载 `agent-team-gui-<日期>.json`，内容为 `{ "format": "agent-team-gui/definitions",
   "version": 1, "agents": [...], "squads": [...] }`——每条记录携带持久化 id 与模型路由（绝不包含
@@ -330,7 +353,8 @@ ID，也可以是小队准确名称（不区分大小写）；若名称重复，
 
 ## 可观测性与失败行为
 
-父会话的常规 `tool/call` 与 `tool/result` 事件会保留请求和完整聚合结果。若成员已经启动，其结果
+父会话的常规 `tool/call` 与持久化文本 `tool/result` 事件会保留请求和完整 canonical JSON 聚合结果。
+若成员已经启动，其结果
 会包含 provider 所有的 child session/run ID，可通过 dsh 现有 subagent/session 视图检查 trajectory。
 宿主日志也会记录成员的开始/结束/失败。结果会区分完成、部分完成与失败成员。单个成员失败会连同
 错误一起进入聚合结果，不会静默停止无关成员。插件不创建长驻子进程；Cordis 负责工具/监听器清理，
@@ -351,17 +375,19 @@ dsh plugin --profile web remove dsh-agent-team-gui
 
 - 仅支持 Web profile；本组合包依赖 dsh Web 的 storage、Connection RPC 与 browser module 服务，
   不支持 headless 或裸自定义 profile。
-- 没有独立的 shell CLI/YAML 记录编辑器；请使用 Web 面板或同进程 Service API。
+- 没有独立的 shell CLI/YAML 记录编辑器；请使用 Settings 或同进程 Service API。
 - 尚无自定义 `squad/*` 会话事件类型：当前树外插件 API 无法把它们注册到 dsh known-event catalog。
   可观测性依赖标准工具事件、子会话和宿主日志。
 - storage domain 版本为 0；developer-preview 版本可能拒绝旧磁盘数据或要求迁移。
 - dsh 在子 Agent 运行时验证模型路由名；provider/model 被删除或拼写错误时会形成明确的成员失败。
-- `chain` 只能串行。大规模 fan-out 尚未使用 workflow engine 的并发控制。
+- 小队模式属于 best-effort 模型编排：动态 system prompt 会要求恰好调用一次
+  `dispatch_to_squad`，但当前 Harness generation API 没有 `toolChoice`，插件无法在 API 层硬性强制。
+- 大规模 fan-out 尚未使用 workflow engine 的并发控制。
 - dsh API 尚未稳定，因此兼容范围有意限定为 `>=0.1.0-rc.5 <0.2.0`。
 
 ## Roadmap
 
-- 为 Web 面板增加批量编辑和更丰富的逐 Agent 分工控制。
+- 为 Settings 增加批量编辑和更丰富的逐 Agent 分工控制。
 - 为持久化定义增加 schema migration。
 - 为大规模小队增加有界并发与更丰富的 trajectory projection。
 

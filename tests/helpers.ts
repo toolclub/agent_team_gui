@@ -9,7 +9,7 @@ import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-sub
 import { vi } from 'vitest'
 import AgentTeamService from '../src/index.ts'
 import { AgentId, SquadId } from '../src/types.ts'
-import type { AgentRecord, SquadRecord } from '../src/types.ts'
+import type { AgentRecord, SessionSquadModeRecord, SquadRecord } from '../src/types.ts'
 
 export class MemoryTable<K extends string, V> implements KvTable<K, V> {
   private readonly values = new Map<K, V>()
@@ -71,6 +71,7 @@ export interface Fixture {
   readonly service: AgentTeamService
   readonly agents: MemoryTable<AgentId, AgentRecord>
   readonly squads: MemoryTable<SquadId, SquadRecord>
+  readonly modes: MemoryTable<SessionId, SessionSquadModeRecord>
   readonly starts: { provider: string; request: SubagentStartRequest }[]
   readonly parent: Agent
 }
@@ -112,9 +113,10 @@ export function createService(options: FixtureOptions = {}): Fixture {
   })
   const agents = new MemoryTable<AgentId, AgentRecord>()
   const squads = new MemoryTable<SquadId, SquadRecord>()
-  Object.assign(service, { agentsTable: agents, squadsTable: squads })
+  const modes = new MemoryTable<SessionId, SessionSquadModeRecord>()
+  Object.assign(service, { agentsTable: agents, squadsTable: squads, sessionModesTable: modes })
   const parent = { id: SessionId('parent') } as unknown as Agent
-  return { ctx, service, agents, squads, starts, parent }
+  return { ctx, service, agents, squads, modes, starts, parent }
 }
 
 export async function populate(): Promise<Fixture> {

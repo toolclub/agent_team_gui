@@ -4,8 +4,8 @@
 
 `dsh-agent-team-gui` is an experimental agent-and-squad orchestration bundle for
 [DeepSeek Harness (dsh)](https://github.com/deepseek-ai/deepseek-harness). It stores reusable agent
-definitions, groups them into squads, and lets the model dispatch work through the
-`dispatch_to_squad` tool. Each member can use a different existing dsh model route and a different
+definitions, groups them into squads, and lets ordinary conversations run in a reusable squad
+mode. Internally, the model uses the `dispatch_to_squad` tool. Each member can use a different existing dsh model route and a different
 tool allow/deny list. API keys remain in dsh's provider and credentials configuration; this plugin
 never stores them.
 
@@ -18,41 +18,45 @@ never stores them.
 
 A squad does not have to share one model configuration. Every agent can independently select an
 existing dsh provider/model route, `maxTokens`, and tool allow/deny policy. Save those agents as
-reusable definitions, combine them into different squads, then choose serial or parallel dispatch
-with `spawn`, `fork`, or serial-only `chain` context through the Web management panel.
+global reusable definitions in Settings, combine them into persistent squads, and select a squad
+per conversation. When squad collaboration is enabled, an ordinary Send enters the collaboration
+flow: the squad follows its optional fixed member order, or lets the model plan assignments and
+execution order when no order is pinned.
 
 ## Status and architecture
 
 ```text
-User conversation
-       |
-       v
-dispatch_to_squad (model tool)
-       |
-       +-- serial / parallel execution
-       +-- spawn / fork / chain context
-       |
-       +--> Agent A --> configured dsh provider/model
-       +--> Agent B --> configured dsh provider/model
-       `--> Agent C --> configured dsh provider/model
-              |
-              `--> aggregated result + append-only session events
+Settings --> global agent/squad definitions --+
+Conversation --> per-session squad mode -------+--> dsh storage-domain --> JSON backend
+                                              |
+Conversation squad selector + collaboration toggle
+                                              |
+ordinary Send --> fixed member order, if set --+
+              `-> model-planned roles/order otherwise
+                                              |
+                  Agent A / Agent B / Agent C
+                                              |
+             assistant response + traceable child sessions
 
-Agent and squad definitions --> dsh storage-domain --> JSON backend
-
-dsh Web composer "Squad" button --> client dashboard --> loopback Connection RPC --> host service
+Natural-language request --> dispatch_to_squad (model tool) --> same squad runtime
 ```
 
 The package contains a Web client, loopback-only Connection RPC, host service, durable registry,
-and model-facing dispatch tool. The composer-side **Squad** button opens the **Agent Teams** panel,
-where you can manage definitions and dispatch into the currently open conversation. Provider and
-model choices are read from dsh's existing model configuration.
+and model-facing dispatch tool. **Settings → Teams** manages global definitions. Each
+conversation gets a squad selector and collaboration toggle; after selecting a squad and enabling
+collaboration, the user sends through the ordinary composer rather than a separate dispatch form.
+Provider and model choices are read from dsh's existing model configuration.
 
 Current capabilities:
 
-- Durable agent and squad records through dsh `storage-domain`.
-- Web forms to create, edit, and delete agents and squads, including a configured-model picker.
-- A composer-side squad button and direct dispatch panel for the current conversation.
+- Durable agent/squad records and per-session squad-mode selection through dsh `storage-domain`.
+- Settings forms to create, edit, and delete global agents and squads, including a configured-model
+  picker.
+- Per-conversation squad selection and an explicit collaboration toggle; when enabled, ordinary
+  Send activates the selected squad mode and instructs the lead model to collaborate, while
+  disabling it returns to normal single-agent sends.
+- Optional fixed member order on a squad; without one, the model determines member assignments and
+  execution order from the request.
 - Per-agent `{ provider, model, maxTokens? }` route and tool restrictions; no API-key storage.
 - Model-callable `dispatch_to_squad` with optional explicit per-agent assignments.
 - Serial or parallel execution and `spawn`, `fork`, or serial-only `chain` context modes.
@@ -118,8 +122,9 @@ Run each command from the directory that contains `agent_team_gui`.
    dsh --profile web
    ```
 
-   Expected: dsh starts normally and a visible **Squad** button appears beside the conversation
-   composer. When info-level host logging is enabled, the log also contains
+   Expected: dsh starts normally, **Settings → Teams** is available, and conversations show
+   the squad selector and collaboration toggle. When info-level host logging is enabled, the log
+   also contains
    `[agent-team-gui] durable registry and dispatch_to_squad ready`.
 
 ## Install from a tarball
@@ -260,10 +265,23 @@ Agent records contain:
 | `maxTokens` | no | Per-agent token cap. |
 | `toolScope.allow` / `toolScope.deny` | no | dsh tool-name restrictions applied to that child. |
 
-Squad records contain `name`, an optional collaboration note, and an ordered list of agent IDs. An
-agent may appear in multiple squads. The **Agent Teams** panel edits these records through a
-loopback-only host RPC. The plugin stores route names only; it does not store or copy provider
-secrets.
+Squad records contain:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `name` | yes | Global display name used by Settings and conversation selectors. |
+| `members` | yes | Unique agent IDs available to the squad. |
+| `collabNote` | no | Collaboration guidance included in member prompts. |
+| `executionOrder` | no | Fixed complete ordering of every member. Omit it for lead-model planning. |
+| `executionMode` | no | Squad default: `serial` or `parallel`; falls back to plugin config. |
+| `contextMode` | no | Squad default: `spawn`, `fork`, or serial-only `chain`; falls back to plugin config. |
+
+Squad records contain `name`, an optional collaboration note, a member list, optional
+`executionOrder`, and optional `executionMode`/`contextMode` defaults. An agent may appear in
+multiple squads. **Settings → Teams** edits these global records through a loopback-only host RPC.
+A fixed `executionOrder` must contain every member exactly once. With no fixed order, the lead model
+plans assignments and passes a complete `memberOrder` when dispatching. The plugin stores route
+names only; it does not store or copy provider secrets.
 
 ### In-process service API
 
@@ -309,31 +327,43 @@ The model selects `dispatch_to_squad`; the plugin does not parse the user's text
 expressions. `squadId` accepts either the durable ID or an exact squad name (case-insensitive); if
 names are duplicated, use the durable ID. Tool arguments are `squadId`, `task`, optional
 `assignments: [{ agentId, task }]`, optional `executionMode`, and optional `contextMode`.
+`memberOrder` is also optional when the squad has no fixed `executionOrder`; when supplied, it must
+be a complete, duplicate-free ordering of all squad members. A fixed squad order cannot be
+overridden per call. The tool renders the complete canonical JSON result—including each member's
+`runId`, `childId`, status, error, stop reason, and output—so the lead model can produce the final
+summary.
 
-### Conversation-side button dispatch
+### Conversation collaboration toggle
 
-1. Start `dsh --profile web`, open a conversation, and select **Squad** beside the composer.
-2. In **Agent Teams**, create the agents. Choose each provider/model from the routes already
-   configured in dsh Settings; optionally enter max tokens and comma-separated allowed/denied
-   tools.
-3. Create a squad, select its members, and optionally add a collaboration note.
-4. In **Dispatch current task**, choose the squad, execution mode, and context mode; enter
-   the task and select **Dispatch**.
+1. Start `dsh --profile web` and open **Settings → Teams**.
+2. Create the agents. Choose each provider/model from the routes already configured in dsh;
+   optionally enter max tokens and comma-separated allowed/denied tools.
+3. Create a global squad, select its members, add an optional collaboration note, and optionally
+   pin a fixed member order. Leave the order unset to let the model plan roles and ordering.
+4. Open any conversation, select **Release review** in its squad selector, and enable squad
+   collaboration.
+5. Type the task in the normal composer and select **Send**. Disable the toggle to return that
+   conversation to ordinary single-agent sends.
 
 ```text
 User types: Inspect this change and prepare a release recommendation.
-User selects: Release review squad -> Parallel -> Dispatch
+Conversation control: Release review squad -> Collaboration on
+User selects: Send
 
-Panel: [the client requests a host dispatch using the current live conversation as parent]
-Panel: completed — Reviewer: completed; Test agent: completed
+Assistant: [the selected squad collaborates using the current conversation as parent]
+Assistant: The release-review squad recommends ... Reviewer: ... Test agent: ...
 ```
 
-The direct result is shown in the overlay; button dispatch does not synthesize an assistant chat
-message.
+The selected squad is conversation-scoped and its mode is durable; both session modes and global
+agent/squad definitions survive restart. Deleting a selected squad automatically disables affected
+session modes. Sending does not require a second task box or a separate Dispatch button.
+Internally, a dynamic system prompt tells the lead model to call `dispatch_to_squad` once and
+summarize its result for the normal assistant response. This is a best-effort model instruction,
+not an API-level forced tool call; see Known limitations.
 
 ### Export and import definitions
 
-The **Agent Teams** panel can dump and restore the durable definitions as a JSON document.
+**Settings → Teams** can dump and restore the durable definitions as a JSON document.
 
 - **Export** downloads `agent-team-gui-<date>.json` containing `{ "format":
   "agent-team-gui/definitions", "version": 1, "agents": [...], "squads": [...] }` — every record with
@@ -351,8 +381,9 @@ document the entire store, and then a squad may only reference agents present in
 
 ## Observability and failure behavior
 
-The parent session's ordinary `tool/call` and `tool/result` events retain the request and complete
-aggregated result. Every member result includes the provider-owned child session/run IDs when a
+The parent session's ordinary `tool/call` and durable text `tool/result` events retain the request
+and complete canonical JSON aggregate. Every member result includes the provider-owned child
+session/run IDs when a
 child started, so its trajectory can be inspected through dsh's existing subagent/session views.
 The host log also records member start/finish/failure. Results distinguish complete, partial, and
 failed members. A member failure is aggregated with its error and does not silently stop unrelated
@@ -374,7 +405,7 @@ list. Durable records under the dsh storage backend are not automatically delete
 
 - Web profile only; the bundle depends on dsh Web's storage, Connection RPC, and browser module
   services and does not support a headless or bare custom profile.
-- There is no separate shell CLI/YAML record editor; use the Web panel or in-process service API.
+- There is no separate shell CLI/YAML record editor; use Settings or the in-process service API.
 - No custom `squad/*` session event types: the current out-of-tree API cannot register them in
   dsh's known-event catalog. Observability relies on standard tool events, child sessions, and host
   logs.
@@ -382,13 +413,15 @@ list. Durable records under the dsh storage backend are not automatically delete
   older on-disk data.
 - Model route names are validated by dsh when children run; a removed/misspelled provider or model
   produces an explicit member failure.
-- `chain` mode is serial only. Large fan-outs do not yet use the workflow engine's concurrency
-  controls.
+- Squad mode is best-effort model orchestration: the dynamic system prompt instructs exactly one
+  `dispatch_to_squad` call, but the current Harness generation API exposes no `toolChoice` control
+  with which the plugin could hard-force that call.
+- Large fan-outs do not yet use the workflow engine's concurrency controls.
 - dsh APIs are pre-stable, so compatibility is intentionally bounded to `>=0.1.0-rc.5 <0.2.0`.
 
 ## Roadmap
 
-- Add bulk editing and richer per-agent assignment controls in the Web panel.
+- Add bulk editing and richer per-agent assignment controls in Settings.
 - Add schema migrations for durable definitions.
 - Add bounded concurrency and richer trajectory projections for large squads.
 

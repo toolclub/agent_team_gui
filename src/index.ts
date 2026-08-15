@@ -4,6 +4,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
 import { agentRecordSchema, agentTeamDomainSpec, agentTeamExportSchema, squadRecordSchema } from './spec.ts'
@@ -24,10 +25,12 @@ import {
   type SquadExportItem,
   type SquadMemberResult,
   type SquadRecord,
+  type SessionSquadModeRecord,
+  type SessionSquadModeView,
 } from './types.ts'
 
 export * from './types.ts'
-export { agentExportItemSchema, agentRecordSchema, agentTeamDomainSpec, agentTeamExportSchema, squadExportItemSchema, squadRecordSchema } from './spec.ts'
+export { agentExportItemSchema, agentRecordSchema, agentTeamDomainSpec, agentTeamExportSchema, sessionSquadModeSchema, squadExportItemSchema, squadRecordSchema } from './spec.ts'
 export { createDispatchToSquadTool } from './tools/dispatch-to-squad.ts'
 export { AGENT_TEAM_RPC_CHANNEL, createAgentTeamRpcHandler } from './rpc.ts'
 
@@ -63,9 +66,18 @@ interface ResolvedMember {
   readonly task: string
 }
 
+/** The subset of the official system-prompt service used by this plugin. */
+interface SystemPromptService {
+  section(section: {
+    readonly name: string
+    readonly order: number
+    readonly text: string | ((context: { readonly agent?: Agent }) => string)
+  }): () => void
+}
+
 /** Durable registry and orchestrator exposed as `ctx.agentTeamGui`. */
 export class AgentTeamService extends Service {
-  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents']
+  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents', 'systemPrompt']
 
   static Config: z<Config> = z.object({
     defaultProvider: z.string().default('spawn'),
@@ -75,6 +87,7 @@ export class AgentTeamService extends Service {
 
   private agentsTable?: KvTable<AgentId, AgentRecord>
   private squadsTable?: KvTable<SquadId, SquadRecord>
+  private sessionModesTable?: KvTable<SessionId, SessionSquadModeRecord>
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'agentTeamGui')
@@ -85,7 +98,14 @@ export class AgentTeamService extends Service {
     this.ctx.effect(() => () => domain.close(), 'agent_team_gui.domainClose')
     this.agentsTable = domain.table('agents')
     this.squadsTable = domain.table('squads')
+    this.sessionModesTable = domain.table('session_modes')
     this.ctx.tools.register(createDispatchToSquadTool(this))
+    const systemPrompt = this.ctx.get('systemPrompt') as SystemPromptService
+    systemPrompt.section({
+      name: 'agent-team:squad-mode',
+      order: 118,
+      text: context => this.squadModeGuidance(context.agent),
+    })
     registerAgentTeamRpc(this.ctx, this)
     this.ctx.logger.info('[agent-team-gui] durable registry and dispatch_to_squad ready')
   }
@@ -98,6 +118,11 @@ export class AgentTeamService extends Service {
   private squads(): KvTable<SquadId, SquadRecord> {
     if (this.squadsTable === undefined) throw new Error('agent_team_gui is not initialized')
     return this.squadsTable
+  }
+
+  private sessionModes(): KvTable<SessionId, SessionSquadModeRecord> {
+    if (this.sessionModesTable === undefined) throw new Error('agent_team_gui is not initialized')
+    return this.sessionModesTable
   }
 
   private async validateModelRoute(record: AgentRecord): Promise<void> {
@@ -137,6 +162,9 @@ export class AgentTeamService extends Service {
       await this.squads().update(squadId, squad => ({
         ...squad,
         members: squad.members.filter(memberId => memberId !== id),
+        ...(squad.executionOrder === undefined
+          ? {}
+          : { executionOrder: squad.executionOrder.filter(memberId => memberId !== id) }),
       }))
     }
     return this.agents().delete(id)
@@ -152,14 +180,31 @@ export class AgentTeamService extends Service {
     return [...this.agents().entries()]
   }
 
-  private validateSquadMembers(members: readonly AgentId[]): void {
-    const unique = new Set(members)
-    if (unique.size !== members.length) {
+  private validateSquadRecord(record: SquadRecord, knownAgents?: ReadonlySet<string>): void {
+    const unique = new Set(record.members)
+    if (unique.size !== record.members.length) {
       throw new AgentTeamError('squad members must be unique', 'INVALID_MEMBERS')
     }
-    const missing = members.filter(id => this.agents().get(id) === undefined)
+    const missing = record.members.filter(id => knownAgents === undefined
+      ? this.agents().get(id) === undefined
+      : !knownAgents.has(id))
     if (missing.length > 0) {
       throw new AgentTeamError(`unknown squad members: ${missing.join(', ')}`, 'INVALID_MEMBERS')
+    }
+    if (record.executionOrder !== undefined) {
+      const orderSet = new Set(record.executionOrder)
+      const isCompletePermutation = record.executionOrder.length === record.members.length
+        && orderSet.size === record.executionOrder.length
+        && record.members.every(id => orderSet.has(id))
+      if (!isCompletePermutation) {
+        throw new AgentTeamError('executionOrder must contain every squad member exactly once', 'INVALID_MEMBERS')
+      }
+      if (record.executionMode === 'parallel') {
+        throw new AgentTeamError('executionOrder requires serial execution', 'INVALID_DISPATCH')
+      }
+    }
+    if (record.executionMode === 'parallel' && record.contextMode === 'chain') {
+      throw new AgentTeamError('contextMode "chain" requires serial execution', 'INVALID_DISPATCH')
     }
   }
 
@@ -169,7 +214,7 @@ export class AgentTeamService extends Service {
     if (this.squads().get(id) !== undefined) {
       throw new AgentTeamError(`squad "${id}" already exists`, 'SQUAD_EXISTS')
     }
-    this.validateSquadMembers(parsed.members)
+    this.validateSquadRecord(parsed)
     await this.squads().put(id, parsed)
     return id
   }
@@ -180,12 +225,16 @@ export class AgentTeamService extends Service {
       throw new AgentTeamError(`squad "${id}" does not exist`, 'SQUAD_NOT_FOUND')
     }
     const parsed = squadRecordSchema.parse(record)
-    this.validateSquadMembers(parsed.members)
+    this.validateSquadRecord(parsed)
     await this.squads().put(id, parsed)
   }
 
-  /** Delete a squad. */
+  /** Delete a squad and disable it in every persisted session mode. */
   async deleteSquad(id: SquadId): Promise<boolean> {
+    if (this.squads().get(id) === undefined) return false
+    for (const [sessionId, mode] of this.sessionModes().entries()) {
+      if (mode.squadId === id) await this.sessionModes().delete(sessionId)
+    }
     return this.squads().delete(id)
   }
 
@@ -197,6 +246,68 @@ export class AgentTeamService extends Service {
   /** Snapshot all squad definitions in durable iteration order. */
   listSquads(): [SquadId, SquadRecord][] {
     return [...this.squads().entries()]
+  }
+
+  /** Resolve the durable squad-mode selection for one Session. */
+  getSessionSquadMode(sessionId: SessionId): SessionSquadModeView | undefined {
+    const mode = this.sessionModes().get(sessionId)
+    if (mode === undefined) return undefined
+    const squad = this.squads().get(mode.squadId)
+    if (squad === undefined) return undefined
+    return { sessionId, squadId: mode.squadId, squadName: squad.name }
+  }
+
+  /** Enable a squad for normal conversation, or disable it when squadId is omitted. */
+  async setSessionSquadMode(sessionId: SessionId, squadId?: SquadId): Promise<SessionSquadModeView | undefined> {
+    if (squadId === undefined) {
+      await this.sessionModes().delete(sessionId)
+      return undefined
+    }
+    const squad = this.squads().get(squadId)
+    if (squad === undefined) {
+      throw new AgentTeamError(`squad "${squadId}" does not exist`, 'SQUAD_NOT_FOUND')
+    }
+    await this.sessionModes().put(sessionId, { squadId })
+    return { sessionId, squadId, squadName: squad.name }
+  }
+
+  /**
+   * Dynamic official system-prompt section for a live parent Agent. Harness
+   * currently exposes no tool-choice control, so this is an instruction seam:
+   * the main model remains responsible for calling the tool and synthesizing.
+   */
+  squadModeGuidance(agent: Agent | undefined): string {
+    if (agent === undefined) return ''
+    const mode = this.getSessionSquadMode(SessionId(agent.id))
+    if (mode === undefined) return ''
+    const squad = this.squads().get(mode.squadId)
+    if (squad === undefined) return ''
+    const order = squad.executionOrder === undefined
+      ? 'No fixed member order is configured. Choose a complete memberOrder based on the user request.'
+      : `Use this fixed serial member order: ${squad.executionOrder.join(' -> ')}.`
+    const executionMode = squad.executionMode ?? (squad.executionOrder === undefined
+      ? this.config.defaultExecutionMode
+      : 'serial')
+    const contextMode = squad.contextMode ?? this.config.defaultContextMode
+    return [
+      '<agent_team_squad_mode>',
+      `Squad mode is enabled for this conversation. Active squad id: ${mode.squadId}.`,
+      `Squad name: ${squad.name}. Members (id, name, model): ${squad.members.map((id) => {
+        const record = this.agents().get(id)
+        return record === undefined ? `${id} (missing)` : `${id} (${record.name}, ${record.provider}/${record.model})`
+      }).join(', ') || '(none)'}.`,
+      ...(squad.collabNote === undefined || squad.collabNote.length === 0
+        ? []
+        : [`Collaboration note: ${squad.collabNote}`]),
+      order,
+      `Default executionMode: ${executionMode}. Default contextMode: ${contextMode}.`,
+      'For each new ordinary user request, call dispatch_to_squad exactly once before your final answer.',
+      `Pass squadId exactly as "${mode.squadId}" and turn the current user request into a concrete shared task.`,
+      'When there is no fixed order, pass memberOrder as a complete, unique permutation of all member ids; use assignments for member-specific tasks.',
+      'After the tool result, synthesize the member outputs into one final answer for the user; explicitly mention partial or failed members when relevant.',
+      'Do not call dispatch_to_squad again for the same user request after receiving its result.',
+      '</agent_team_squad_mode>',
+    ].join('\n')
   }
 
   /** Dump every durable definition as a versioned, self-describing document. */
@@ -245,10 +356,11 @@ export class AgentTeamService extends Service {
       seenSquads.add(item.id)
       const { id, ...recordFields } = item
       const record = squadRecordSchema.parse(recordFields)
-      const missing = record.members.filter(memberId => !knownAgents.has(memberId))
-      if (missing.length > 0) {
+      try {
+        this.validateSquadRecord(record, knownAgents)
+      } catch (error: unknown) {
         throw new AgentTeamError(
-          `import squad "${id}" references unknown agents: ${missing.join(', ')}`,
+          `invalid import squad "${id}": ${this.errorText(error)}`,
           'INVALID_IMPORT',
         )
       }
@@ -258,6 +370,10 @@ export class AgentTeamService extends Service {
     if (mode === 'replace') {
       for (const [id] of this.listAgents()) await this.agents().delete(id)
       for (const [id] of this.listSquads()) await this.squads().delete(id)
+      const importedSquadIds = new Set(squadsToWrite.map(item => item.id))
+      for (const [sessionId, sessionMode] of this.sessionModes().entries()) {
+        if (!importedSquadIds.has(sessionMode.squadId)) await this.sessionModes().delete(sessionId)
+      }
     }
     for (const { id, record } of agentsToWrite) await this.agents().put(id, record)
     for (const { id, record } of squadsToWrite) await this.squads().put(id, record)
@@ -290,7 +406,11 @@ export class AgentTeamService extends Service {
       if (squad.members.includes(agentId)) {
         throw new AgentTeamError(`agent "${agentId}" is already in squad "${squadId}"`, 'INVALID_MEMBERS')
       }
-      return { ...squad, members: [...squad.members, agentId] }
+      return {
+        ...squad,
+        members: [...squad.members, agentId],
+        ...(squad.executionOrder === undefined ? {} : { executionOrder: [...squad.executionOrder, agentId] }),
+      }
     })
   }
 
@@ -302,10 +422,17 @@ export class AgentTeamService extends Service {
     return this.squads().update(squadId, squad => ({
       ...squad,
       members: squad.members.filter(memberId => memberId !== agentId),
+      ...(squad.executionOrder === undefined
+        ? {}
+        : { executionOrder: squad.executionOrder.filter(memberId => memberId !== agentId) }),
     }))
   }
 
-  private resolveMembers(squad: SquadRecord, assignments: readonly SquadAssignment[] | undefined): ResolvedMember[] {
+  private resolveMembers(
+    squad: SquadRecord,
+    assignments: readonly SquadAssignment[] | undefined,
+    memberOrder: readonly AgentId[] | undefined,
+  ): ResolvedMember[] {
     const assignmentByAgent = new Map<AgentId, string>()
     if (assignments !== undefined) {
       if (assignments.length === 0) {
@@ -324,7 +451,20 @@ export class AgentTeamService extends Service {
         assignmentByAgent.set(assignment.agentId, assignment.task)
       }
     }
-    return squad.members.map((id) => {
+    if (squad.executionOrder !== undefined && memberOrder !== undefined) {
+      throw new AgentTeamError('memberOrder cannot override a squad executionOrder', 'INVALID_DISPATCH')
+    }
+    if (memberOrder !== undefined) {
+      const orderSet = new Set(memberOrder)
+      const isCompletePermutation = memberOrder.length === squad.members.length
+        && orderSet.size === memberOrder.length
+        && squad.members.every(id => orderSet.has(id))
+      if (!isCompletePermutation) {
+        throw new AgentTeamError('memberOrder must contain every squad member exactly once', 'INVALID_DISPATCH')
+      }
+    }
+    const orderedIds = squad.executionOrder ?? memberOrder ?? squad.members
+    return orderedIds.map((id) => {
       const record = this.agents().get(id)
       if (record === undefined) {
         throw new AgentTeamError(`squad references missing agent "${id}"`, 'AGENT_NOT_FOUND')
@@ -443,12 +583,17 @@ export class AgentTeamService extends Service {
     if (squad.members.length === 0) {
       throw new AgentTeamError(`squad "${request.squadId}" has no members`, 'INVALID_DISPATCH')
     }
-    const executionMode = request.executionMode ?? this.config.defaultExecutionMode
-    const contextMode = request.contextMode ?? this.config.defaultContextMode
+    const executionMode = request.executionMode
+      ?? squad.executionMode
+      ?? (squad.executionOrder === undefined ? this.config.defaultExecutionMode : 'serial')
+    const contextMode = request.contextMode ?? squad.contextMode ?? this.config.defaultContextMode
+    if (squad.executionOrder !== undefined && executionMode === 'parallel') {
+      throw new AgentTeamError('a squad with executionOrder requires serial execution', 'INVALID_DISPATCH')
+    }
     if (executionMode === 'parallel' && contextMode === 'chain') {
       throw new AgentTeamError('contextMode "chain" requires serial execution', 'INVALID_DISPATCH')
     }
-    const members = this.resolveMembers(squad, request.assignments)
+    const members = this.resolveMembers(squad, request.assignments, request.memberOrder)
     const provider = contextMode === 'fork' ? 'fork' : this.config.defaultProvider
     let results: SquadMemberResult[]
     if (executionMode === 'parallel') {

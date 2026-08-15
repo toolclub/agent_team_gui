@@ -1,12 +1,19 @@
 import { describe, expect, it, vi } from 'vitest'
 import { ZodError } from 'zod'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
+import { SessionId } from '@deepseek-ai/dsh-session'
 import { AgentId, SquadId } from '../src/types.ts'
 import { agent, createService, populate, researcherId, reviewerId, squadId, writerId } from './helpers.ts'
 
 describe('AgentTeamService export/import', () => {
   it('exports a versioned document that round-trips into an empty store', async () => {
     const source = await populate()
+    await source.service.updateSquad(squadId, {
+      name: 'Delivery',
+      members: [researcherId, writerId, reviewerId],
+      executionOrder: [reviewerId, writerId, researcherId],
+      contextMode: 'chain',
+    })
     const doc = await source.service.exportDefinitions()
 
     expect(doc.format).toBe('agent-team-gui/definitions')
@@ -47,6 +54,8 @@ describe('AgentTeamService export/import', () => {
 
   it('replace mode makes the document the whole store', async () => {
     const state = await populate()
+    const sessionId = SessionId('conversation')
+    await state.service.setSessionSquadMode(sessionId, squadId)
     const doc = {
       format: 'agent-team-gui/definitions',
       version: 1,
@@ -63,6 +72,7 @@ describe('AgentTeamService export/import', () => {
     expect(result).toEqual({ agents: 1, squads: 0 })
     expect(state.service.listAgents().map(([id]) => id)).toEqual([researcherId])
     expect(state.service.listSquads()).toEqual([])
+    expect(state.service.getSessionSquadMode(sessionId)).toBeUndefined()
   })
 
   it('rejects duplicate ids and unknown member references before writing anything', async () => {
