@@ -74,9 +74,16 @@ Current capabilities:
 - At least one provider/model route configured in dsh. Configure credentials through dsh Settings
   or its credentials mechanism, never in this plugin's records.
 
-The commands below assume the installed `dsh` executable. When running dsh itself from a source
-checkout, replace `dsh ...` with `pnpm --dir /path/to/deepseek-harness dsh ...` after building that
-checkout.
+The commands below assume an installed `dsh` executable. Cloning the DeepSeek Harness source does
+**not** install that executable globally. From the Harness repository root, verify the source CLI
+with:
+
+```sh
+pnpm dsh --version
+```
+
+When running from another directory, replace every `dsh ...` below with
+`pnpm --dir /absolute/path/to/deepseek-harness dsh ...`.
 
 ## Install from a local directory
 

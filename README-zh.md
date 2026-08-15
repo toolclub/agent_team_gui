@@ -64,8 +64,15 @@ Settings --> 全局 Agent/小队定义 ---------+
 - dsh 中已经配置至少一个 provider/model 路由。请通过 dsh Settings 或其凭据机制配置凭据，
   不要把凭据写入本插件记录。
 
-下列命令假设使用已安装的 `dsh` 可执行文件。若从源码 checkout 运行 dsh，请先构建该 checkout，
-再把 `dsh ...` 替换为 `pnpm --dir /path/to/deepseek-harness dsh ...`。
+下列命令假设使用已安装的 `dsh` 可执行文件。仅克隆 DeepSeek Harness 源码**不会**自动全局安装
+该命令。在 Harness 仓库根目录先这样验证源码 CLI：
+
+```sh
+pnpm dsh --version
+```
+
+从其他目录运行时，把下文每条 `dsh ...` 替换为
+`pnpm --dir /absolute/path/to/deepseek-harness dsh ...`。
 
 ## 从本地目录安装
 
