@@ -84,7 +84,7 @@ provider/model 选项来自 dsh 已有的模型配置。
 3. 把本地组合包加入 Web profile：
 
    ```sh
-   dsh plugin --profile web add ./agent_team_gui
+   dsh plugin --profile web add -w ./agent_team_gui
    ```
 
    预期：pnpm 报告已加入 `dsh-agent-team-gui`；dsh 不应打印包“declares no dsh.bundle”的警告。
@@ -131,7 +131,7 @@ provider/model 选项来自 dsh 已有的模型配置。
 3. 安装该归档：
 
    ```sh
-   dsh plugin --profile web add ./agent_team_gui/dsh-agent-team-gui-0.1.0.tgz
+   dsh plugin --profile web add -w ./agent_team_gui/dsh-agent-team-gui-0.1.0.tgz
    ```
 
    预期：pnpm 报告已加入 `dsh-agent-team-gui`，且没有 `allowBuilds` 提示。若 `pack` 把归档写到
@@ -159,7 +159,7 @@ Git 依赖只包含源码，而不是预构建的发布产物。因此本仓库�
 1. 锁定并安装已经审查的 commit：
 
    ```sh
-   dsh plugin --profile web add github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
    ```
 
    pnpm 10 及以上版本首次执行时的预期：安装可能失败，因为 pnpm 会阻止 Git 依赖的 `prepare`
@@ -180,7 +180,7 @@ Git 依赖只包含源码，而不是预构建的发布产物。因此本仓库�
 3. 重新执行同一条锁定 commit 的安装命令：
 
    ```sh
-   dsh plugin --profile web add github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
    ```
 
    预期：pnpm 获准运行 `prepare`，完成构建并报告包已加入。

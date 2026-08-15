@@ -91,7 +91,7 @@ Run each command from the directory that contains `agent_team_gui`.
 3. Add the local bundle to the Web profile:
 
    ```sh
-   dsh plugin --profile web add ./agent_team_gui
+   dsh plugin --profile web add -w ./agent_team_gui
    ```
 
    Expected: pnpm reports `dsh-agent-team-gui` as added. dsh must not print the warning that the
@@ -140,7 +140,7 @@ A built tarball contains compiled output and therefore needs no install-script a
 3. Install that archive:
 
    ```sh
-   dsh plugin --profile web add ./agent_team_gui/dsh-agent-team-gui-0.1.0.tgz
+   dsh plugin --profile web add -w ./agent_team_gui/dsh-agent-team-gui-0.1.0.tgz
    ```
 
    Expected: pnpm reports `dsh-agent-team-gui` as added without an `allowBuilds` prompt. If `pack`
@@ -169,7 +169,7 @@ You can also send this single sentence to a DeepSeek Harness agent that has term
 1. Pin and install a reviewed commit:
 
    ```sh
-   dsh plugin --profile web add github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
    ```
 
    Expected with pnpm 10 or later on the first attempt: installation may fail because pnpm blocks
@@ -191,7 +191,7 @@ You can also send this single sentence to a DeepSeek Harness agent that has term
 3. Re-run the same pinned install:
 
    ```sh
-   dsh plugin --profile web add github:toolclub/agent_team_gui#<commit-sha>
+   dsh plugin --profile web add -w github:toolclub/agent_team_gui#<commit-sha>
    ```
 
    Expected: pnpm is allowed to run `prepare`, builds the package, and reports it as added.
