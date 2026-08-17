@@ -64,6 +64,7 @@ describe('release engineering contract', () => {
     expect(common).toContain('const safe = {}')
     expect(common).toContain('NPM_CONFIG_USERCONFIG')
     expect(fixture).toContain("'--port', this.port ?? '0'")
+    expect(fixture).toContain("'add', '-w', this.pluginSpec")
     expect(fixture).not.toContain("join(homedir(), '.dsh')")
     const browser = readFileSync(join(root, 'scripts/quality/browser-smoke.mjs'), 'utf8')
     const capture = readFileSync(join(root, 'scripts/quality/capture-readme.mjs'), 'utf8')

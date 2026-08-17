@@ -69,7 +69,7 @@ export class DshWebFixture {
       this.pluginSpec = requestedSpec
       await this.authorizeExactGitBuild(requestedSpec)
     }
-    await this.runner.run(this.dshBin, ['plugin', '--profile', 'web', 'add', this.pluginSpec], {
+    await this.runner.run(this.dshBin, ['plugin', '--profile', 'web', 'add', '-w', this.pluginSpec], {
       timeoutMs: this.timeoutMs * 2,
     })
     const manifestPath = join(this.home, 'profiles', 'web', 'package.json')
