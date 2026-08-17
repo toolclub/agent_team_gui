@@ -1174,6 +1174,14 @@ export class ExecutionApplicationService extends DefinitionApplicationService {
         planner: 'deterministic-fallback',
       }
       await this.updateRun(dispatchId, run => ({ ...run, plan: executionPlan }))
+      if (squad.requirePlanApproval === true) {
+        const pausedAt = Date.now()
+        await this.updateRun(dispatchId, run => ({ ...run, status: 'awaiting-approval', phase: 'awaiting-approval' }))
+        return {
+          dispatchId, squadId: request.squadId, squadName: squad.name, task: request.task,
+          executionMode, contextMode, status: 'awaiting-approval', members: [], usage: this.addUsage(executionPlan.usage), startedAt, endedAt: pausedAt, plan: executionPlan,
+        }
+      }
       const selectedMembers = nodes.map(node => {
         const existing = byId.get(node.agentId)
         const record = existing?.record ?? agents.get(node.agentId)
@@ -1632,6 +1640,20 @@ export class ExecutionApplicationService extends DefinitionApplicationService {
       ...(replayPlan === undefined ? {} : { replayPlan }),
     }, signal)
     return { id: started.id, status: started.status, retryOf: id }
+  }
+
+  /** Approve or reject a run paused at the plan-approval gate. */
+  async resumeRun(id: DispatchId, approved: boolean, parent: Agent, signal?: AbortSignal): Promise<{ id: DispatchId; status: 'rejected' | 'queued'; retryOf?: DispatchId }> {
+    throwIfAborted(signal)
+    const source = this.runs().get(id)
+    if (source === undefined) throw new AgentTeamError(`run "${id}" does not exist`, 'INVALID_DISPATCH')
+    if (source.status !== 'awaiting-approval') throw new AgentTeamError(`run "${id}" is not awaiting approval`, 'INVALID_DISPATCH')
+    if (!approved) {
+      const endedAt = Date.now()
+      await this.updateRun(id, run => ({ ...run, status: 'rejected', phase: 'settled', endedAt, error: 'plan rejected by human' }))
+      return { id, status: 'rejected' }
+    }
+    return this.retryRun(id, parent, undefined, signal)
   }
 
   clearRuns(

@@ -80,6 +80,8 @@ export interface SquadRecord {
   readonly plannerMaxTokens?: number
   /** Optional bounded reviewer -> repair owner -> reviewer loop. */
   readonly qualityGate?: SquadQualityGate
+  /** Pause after the plan is produced and wait for a human approve/reject before running members. */
+  readonly requirePlanApproval?: boolean
 }
 
 /** A finite, explicitly-owned quality loop; arbitrary planner recursion is never permitted. */
@@ -209,7 +211,7 @@ export interface SquadDispatchResult {
   readonly task: string
   readonly executionMode: 'serial' | 'parallel'
   readonly contextMode: 'spawn' | 'fork' | 'chain'
-  readonly status: 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped'
+  readonly status: 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped' | 'awaiting-approval' | 'rejected'
   readonly members: SquadMemberResult[]
   readonly usage: AgentTokenUsage
   readonly startedAt: number
@@ -229,11 +231,11 @@ export interface SquadRunRecord {
   readonly task: string
   readonly executionMode: 'serial' | 'parallel'
   readonly contextMode: 'spawn' | 'fork' | 'chain'
-  readonly status: 'planning' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped'
+  readonly status: 'planning' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped' | 'awaiting-approval' | 'rejected'
   /** Official usage coverage across every expected planner/member/review/repair sample. */
   readonly meteringCoverage?: 'full' | 'partial' | 'none'
   /** Fine-grained live phase; optional so v0.4/v0.5-preview rows still parse. */
-  readonly phase?: 'queued' | 'planning' | 'members' | 'quality-review' | 'quality-repair' | 'synthesis' | 'settled'
+  readonly phase?: 'queued' | 'planning' | 'members' | 'quality-review' | 'quality-repair' | 'synthesis' | 'settled' | 'awaiting-approval'
   readonly startedAt: number
   readonly endedAt?: number
   readonly members: SquadRunMember[]

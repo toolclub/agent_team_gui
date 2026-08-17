@@ -63,6 +63,7 @@ function TeamRunCenterContent({ controller, sessionId }: TeamRunCenterProps): Re
   const retryRun = (id: string, agentId?: string): void => { void act(`retry:${id}:${agentId ?? ''}`, () => controller.runs.retry(id, agentId)) }
   const cancelRun = (id: string): void => { void act(`cancel:${id}`, () => controller.runs.cancel(id)) }
   const exportRun = (id: string): void => { void act(`export:${id}`, async () => downloadJson(await controller.runs.export(id), `agent-team-run-${id}.json`)) }
+  const approveRun = (id: string, approved: boolean): void => { void act(`approve:${id}:${approved}`, () => controller.runs.approve(id, approved)) }
   const clear = (): void => {
     if (!window.confirm(t('clearConfirm'))) return
     void act('clear', () => controller.runs.clear(sessionId))
@@ -91,12 +92,12 @@ function TeamRunCenterContent({ controller, sessionId }: TeamRunCenterProps): Re
       </div>
       {snapshot.status === 'loading' && <div className="atg-loading">{t('loading')}</div>}
       {snapshot.runs.length === 0 && snapshot.status !== 'loading' && <Empty title={t('noRuns')} />}
-      <div className="atg-run-list">{filtered.map(run => <RunCard key={run.id} run={run} open={expanded === run.id} busy={busy} locale={active} t={t} onToggle={() => { toggleRun(run) }} onCancel={cancelRun} onRetry={retryRun} onExport={exportRun} />)}</div>
+      <div className="atg-run-list">{filtered.map(run => <RunCard key={run.id} run={run} open={expanded === run.id} busy={busy} locale={active} t={t} onToggle={() => { toggleRun(run) }} onCancel={cancelRun} onRetry={retryRun} onExport={exportRun} onApprove={approveRun} />)}</div>
     </div>}
   </div>
 }
 
-function RunCard({ run, open, busy, locale, t, onToggle, onCancel, onRetry, onExport }: { run: RunView; open: boolean; busy: string | null; locale: string; t: Translate; onToggle(): void; onCancel(id: string): void; onRetry(id: string, agentId?: string): void; onExport(id: string): void }): ReactNode {
+function RunCard({ run, open, busy, locale, t, onToggle, onCancel, onRetry, onExport, onApprove }: { run: RunView; open: boolean; busy: string | null; locale: string; t: Translate; onToggle(): void; onCancel(id: string): void; onRetry(id: string, agentId?: string): void; onExport(id: string): void; onApprove(id: string, approved: boolean): void }): ReactNode {
   const completed = run.members.filter(member => member.status === 'completed').length
   const stages = planStages(run.plan)
   const plannerUsage = run.plan?.usage ?? run.liveUsage?.planner
@@ -118,7 +119,7 @@ function RunCard({ run, open, busy, locale, t, onToggle, onCancel, onRetry, onEx
       <section className="atg-run-members" aria-label={t('members')}>{run.members.map(member => <details key={`${member.agentId}:${member.phase ?? 'member'}`} className={`atg-run-member status-${member.status}`}><summary><span className={`atg-status-dot status-${member.status}`} /><span><strong>{member.agentName}</strong><small>{member.provider} / {member.model}{member.phase !== undefined ? ` · ${t(member.phase === 'quality' ? 'phaseQuality' : member.phase === 'repair' ? 'phaseRepair' : 'phaseMember')}` : ''}</small></span><span>{memberStatusLabel(member.status, t)}</span><span>{member.usage === undefined ? (member.status === 'running' ? t('metering') : '—') : `${formatTokens(member.usage.totalTokens)} ${t('tokens')}`}</span><span>{[member.attempts > 1 ? `×${member.attempts}` : '', member.usageSamples === undefined ? '' : t('sampleCoverage', member.usageSamples)].filter(Boolean).join(' · ')}</span></summary><div className="atg-member-output">{member.error !== undefined && <div className="atg-alert">{member.error}</div>}<pre>{member.output.map(block => block.text ?? '').filter(Boolean).join('\n') || '—'}</pre><div className="atg-member-actions"><button type="button" className="atg-button ghost" disabled={busy !== null || isLive(run.status)} onClick={() => { onRetry(run.id, member.agentId) }}>{t('retryMember')}</button></div></div></details>)}</section>
       {run.quality !== undefined && <QualityTimeline quality={run.quality} t={t} />}
       <div className="atg-synthesis"><span aria-hidden="true">◆</span><div><strong>{t('handoffToLead')}</strong><small>{isLive(run.status) || run.phase === 'synthesis' ? t('handoffWaiting') : run.status === 'completed' || run.status === 'partial' ? t('handoffReady') : t(statusKey(run.status))}</small></div></div>
-      <div className="atg-actions">{isLive(run.status) && <button type="button" className="atg-button danger" disabled={busy !== null} onClick={() => { onCancel(run.id) }}>{t('stopRun')}</button>}<button type="button" className="atg-button ghost" disabled={busy !== null || isLive(run.status)} onClick={() => { onRetry(run.id) }}>{t('retryRun')}</button><button type="button" className="atg-button ghost" disabled={busy !== null} onClick={() => { onExport(run.id) }}>{t('exportRun')}</button></div>
+      <div className="atg-actions">{isLive(run.status) && <button type="button" className="atg-button danger" disabled={busy !== null} onClick={() => { onCancel(run.id) }}>{t('stopRun')}</button>}{run.status === 'awaiting-approval' && <><button type="button" className="atg-button primary" disabled={busy !== null} onClick={() => { onApprove(run.id, true) }}>{t('approvePlan')}</button><button type="button" className="atg-button danger" disabled={busy !== null} onClick={() => { onApprove(run.id, false) }}>{t('rejectPlan')}</button></>}<button type="button" className="atg-button ghost" disabled={busy !== null || isLive(run.status)} onClick={() => { onRetry(run.id) }}>{t('retryRun')}</button><button type="button" className="atg-button ghost" disabled={busy !== null} onClick={() => { onExport(run.id) }}>{t('exportRun')}</button></div>
     </div>}
   </article>
 }
@@ -246,6 +247,7 @@ function memberStatusLabel(status: RunMemberStatus, t: Translate): string {
 }
 
 function runPhaseLabel(phase: NonNullable<RunView['phase']>, t: Translate): string {
+  if (phase === 'awaiting-approval') return t('statusAwaitingApproval')
   const keys = {
     queued: 'phaseQueued', planning: 'phasePlanning', members: 'phaseMembers',
     'quality-review': 'phaseQualityReview', 'quality-repair': 'phaseQualityRepair',

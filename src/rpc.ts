@@ -493,6 +493,16 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
             signal,
           ))
         }
+        case 'run/approve': {
+          const payload = z.object({ id: idSchema, approved: z.boolean() }).strict().parse(rawPayload)
+          const source = service.getRun(DispatchId(payload.id))
+          if (source === undefined) return failure(new AgentTeamError(`run "${payload.id}" does not exist`, 'INVALID_DISPATCH'), signal)
+          const parent = ctx.agents.get(source.sessionId)
+          if (parent === undefined) {
+            return { ok: false, error: { code: 'session-not-found', message: `no live parent agent for session ${source.sessionId}`, details: { sessionId: source.sessionId } } }
+          }
+          return success(await service.resumeRun(DispatchId(payload.id), payload.approved, parent, signal))
+        }
         case 'run/clear': {
           const payload = z.object({
             id: idSchema.optional(), sessionId: idSchema.optional(), before: z.number().int().nonnegative().optional(), settledOnly: z.boolean().optional(),

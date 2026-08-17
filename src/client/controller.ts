@@ -253,6 +253,9 @@ export class RunGateway {
   retry(id: string, agentId?: string): Promise<{ id: string; status: string; retryOf: string }> {
     return this.call('run/retry', { id, ...(agentId === undefined ? {} : { agentId }) })
   }
+  approve(id: string, approved: boolean): Promise<{ id: string; status: string }> {
+    return this.call('run/approve', { id, approved })
+  }
   clear(sessionId: string): Promise<{ cleared: number }> {
     return this.call('run/clear', { sessionId, settledOnly: true })
   }
@@ -274,7 +277,7 @@ export function isRunView(value: unknown): value is RunView {
   const run = value as Record<string, unknown>
   if (!isStringFields(run, ['id', 'sessionId', 'squadName', 'task', 'status', 'executionMode', 'contextMode'])
     || typeof run.startedAt !== 'number' || !Array.isArray(run.members) || !isUsage(run.usage)) return false
-  if (!['planning', 'queued', 'running', 'completed', 'partial', 'failed', 'cancelled', 'interrupted', 'skipped'].includes(String(run.status))
+  if (!['planning', 'queued', 'running', 'completed', 'partial', 'failed', 'cancelled', 'interrupted', 'skipped', 'awaiting-approval', 'rejected'].includes(String(run.status))
     || !['serial', 'parallel'].includes(String(run.executionMode))
     || !['spawn', 'fork', 'chain'].includes(String(run.contextMode))
     || !isOptionalString(run.squadId) || !isOptionalString(run.projectKey) || !isOptionalString(run.retryOf) || !isOptionalString(run.error)

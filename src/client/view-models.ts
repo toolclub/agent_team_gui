@@ -42,6 +42,7 @@ export function statusKey(status: RunStatus): MessageKey {
   const map: Record<RunStatus, MessageKey> = {
     planning: 'statusPlanning', queued: 'statusQueued', running: 'statusRunning', completed: 'statusCompleted',
     partial: 'statusPartial', failed: 'statusFailed', cancelled: 'statusCancelled', interrupted: 'statusInterrupted', skipped: 'statusSkipped',
+    'awaiting-approval': 'statusAwaitingApproval', rejected: 'statusRejected',
   }
   return map[status]
 }
@@ -51,7 +52,7 @@ export function isLive(status: RunStatus): boolean {
 }
 
 export function isAttention(status: RunStatus): boolean {
-  return status === 'failed' || status === 'partial' || status === 'interrupted'
+  return status === 'failed' || status === 'partial' || status === 'interrupted' || status === 'awaiting-approval'
 }
 
 export function usageShare(usage: TokenUsageView): number {

@@ -73,6 +73,7 @@ const squadReadFields = z.object({
     maxRounds: z.union([z.literal(0), z.literal(1), z.literal(2)]),
     criteria: z.string().optional(),
   }).strict().optional(),
+  requirePlanApproval: z.boolean().optional(),
 }).strict()
 
 /** Strict bounded schema for every new squad write and v2 document. */
@@ -100,6 +101,7 @@ const squadWriteFields = z.object({
     maxRounds: z.union([z.literal(0), z.literal(1), z.literal(2)]),
     criteria: z.string().max(20_000).optional(),
   }).strict().optional(),
+  requirePlanApproval: z.boolean().optional(),
 }).strict()
 
 /** New-write validation. Kept under the original export name for API compatibility. */

@@ -118,9 +118,9 @@ export const EMPTY_USAGE: TokenUsageView = {
   providerReported: false,
 }
 
-export type RunStatus = 'planning' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped'
+export type RunStatus = 'planning' | 'queued' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled' | 'interrupted' | 'skipped' | 'awaiting-approval' | 'rejected'
 export type RunMemberStatus = 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'interrupted' | 'timed-out' | 'skipped'
-export type RunPhase = 'queued' | 'planning' | 'members' | 'quality-review' | 'quality-repair' | 'synthesis' | 'settled'
+export type RunPhase = 'queued' | 'planning' | 'members' | 'quality-review' | 'quality-repair' | 'synthesis' | 'settled' | 'awaiting-approval'
 
 export interface RunMemberView {
   agentId: string

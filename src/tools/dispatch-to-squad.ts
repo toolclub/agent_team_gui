@@ -58,7 +58,7 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
           task: { type: 'string', required: true },
           executionMode: { type: 'string', required: true, enum: ['serial', 'parallel'] },
           contextMode: { type: 'string', required: true, enum: ['spawn', 'fork', 'chain'] },
-          status: { type: 'string', required: true, enum: ['completed', 'partial', 'failed', 'cancelled', 'interrupted', 'skipped'] },
+          status: { type: 'string', required: true, enum: ['completed', 'partial', 'failed', 'cancelled', 'interrupted', 'skipped', 'awaiting-approval', 'rejected'] },
           startedAt: { type: 'number', required: true },
           endedAt: { type: 'number', required: true },
           usage: { type: 'json', required: true },
