@@ -134,6 +134,7 @@ jobs:
           node-version: 22.19.0
           cache: pnpm
       - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
       - run: pnpm run quality:doctor
         env:
           RUN_SUPPLEMENTAL_DOCTOR: 1

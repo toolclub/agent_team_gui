@@ -137,6 +137,10 @@ describe('release engineering contract', () => {
       expect(references.length).toBeGreaterThan(0)
       expect(references.every(reference => /^[0-9a-f]{40}$/.test(reference!))).toBe(true)
     }
+    const ciWorkflow = readFileSync(join(root, '.github', 'workflows', 'ci.yml'), 'utf8')
+    const doctorJob = ciWorkflow.split('supplemental-doctor:')[1]
+    expect(doctorJob).toContain('- run: pnpm run build')
+    expect(doctorJob!.indexOf('- run: pnpm run build')).toBeLessThan(doctorJob!.indexOf('- run: pnpm run quality:doctor'))
     const releaseWorkflow = readFileSync(join(root, '.github', 'workflows', 'release-preflight.yml'), 'utf8')
     expect(releaseWorkflow).toContain("git rev-parse --verify 'HEAD^{commit}'")
     expect(releaseWorkflow).toContain('PLUGIN_SPEC: github:toolclub/dsh-agent-team-gui#${{ steps.release.outputs.commit }}')
