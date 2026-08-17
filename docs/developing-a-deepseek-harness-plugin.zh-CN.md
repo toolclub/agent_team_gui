@@ -178,28 +178,38 @@ Cordis 支持三种插件形态：
 2. 对象插件：默认导出带有 `apply(ctx)` 方法的对象。
 3. 类插件：默认导出继承 `Service` 的类。
 
-当插件需要向其他插件提供长期存在的服务时，通常会采用第三种形态。例如本项目的
-[`src/index.ts`](../src/index.ts) 使用的是：
+当插件需要向其他插件提供长期存在的服务时，通常会采用第三种形态。例如本项目把业务逻辑
+分到 application/domain/infrastructure 层，组合根 [`src/index.ts`](../src/index.ts) 使用的是：
 
 ```ts
-export class AgentTeamService extends Service {
-  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents', 'systemPrompt']
+export class AgentTeamService extends ExecutionApplicationService {
+  static inject = [
+    'storageDomain', 'tools', 'subagents', 'llm',
+    'agents', 'sessions', 'systemPrompt',
+  ]
 
-  constructor(ctx: Context, config: Config) {
-    super(ctx, 'agentTeamGui')
+  static Config = z.object({
+    defaultProvider: z.string().default('spawn'),
+    // 其余配置字段……
+  })
+
+  constructor(ctx: Context, config: AgentTeamConfig) {
+    super(ctx, config)
   }
 
   protected async [Service.init](): Promise<void> {
-    // 打开持久化存储、注册工具、RPC 和 system prompt。
+    const domain = await this.ctx.storageDomain.open(agentTeamDomainSpec)
+    // 挂载数据表，然后注册工具、RPC、system prompt 与对话编排。
   }
 }
 
 export default AgentTeamService
 ```
 
-此时 Loader 加载默认导出的类并创建实例，`Service` 生命周期会调用 `[Service.init]()`；所以不需要
-再额外导出 `apply`。函数插件最适合入门，类插件适合提供 `ctx.agentTeamGui` 这类可被其他插件使用
-的服务。
+`ExecutionApplicationService` 最终继承 Cordis `Service`，并在它的基类构造函数中注册
+`agentTeamGui` service。Loader 加载默认导出的类并创建实例，`Service` 生命周期会调用
+`[Service.init]()`；所以不需要再额外导出 `apply`。函数插件最适合入门，类插件适合提供
+`ctx.agentTeamGui` 这类可被其他插件使用的长期 service。
 
 需要用户配置时，不要把参数硬编码在代码中。应导出 `Config` 类型和同名 Schemastery schema，
 让错误配置在加载时直接失败。完整示例见

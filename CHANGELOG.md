@@ -1,5 +1,37 @@
 # Changelog
 
+## 0.5.0 — 2026-08-17
+
+- Add first-class **Team**, **Solo**, and **Inherited** conversation modes plus a durable one-shot
+  override and project default. Cold boot, refresh, and live Host reconnect now rehydrate without
+  requiring users to re-save a team or wait behind a permanently disabled control.
+- Make the active conversation's model route the bounded workflow planner by default. It can skip
+  unsuitable work, select an adaptive subset, produce role-specific assignments and an acyclic
+  dependency graph, or fall back to a deterministic plan when structured planning fails.
+- Add bounded parallel DAG execution, foreground/background runs, official Jobs integration,
+  cancellation, crash reconciliation, linked whole/member retry, configurable retention, plan
+  preview, and an optional reviewer/repair loop capped at two rounds.
+- Keep automatic run/version retention opt-in (`0` by default), so upgrades never silently delete
+  existing history; explicit positive limits still provide bounded cleanup.
+- Prevent descendant explosions with lineage checks, fail-closed denial of every detected subagent
+  tool name, bounded prompts/handoffs, a durable latest-user-message claim, and one normalized plan
+  per run. Repeated model-tool calls for one user message cannot start duplicate teams.
+- Stream the official provider token projection across planner, member, review, and repair phases;
+  preserve uncached input/cache read/cache write/output buckets; keep retry totals monotonic; and
+  label coverage as full, partial, or unavailable instead of treating missing samples as zero.
+- Add reproducible team versions containing member snapshots, definition backup preview/apply,
+  portable recipes with copy/merge and primary/fallback route remapping, impact warnings, and
+  compensating rollback for aborted or failed multi-table writes.
+- Rebuild the Web experience into focused Composer, Teams/Members/Recipes Settings, Run Center, and
+  Insights surfaces with official live locale updates, keyboard/focus handling, inline validation,
+  dirty-form guards, light/dark theme tokens, and narrow-screen layouts.
+- Separate strict new-write schemas from permissive legacy readers so existing v0.4 records and v1
+  exports—including previously valid large or empty records—still reopen and import safely.
+- Add Host and rendered-client regression suites, an isolated fresh-profile install/restart smoke,
+  browser accessibility/keyboard/reconnect checks, package-closure and secret audits, immutable
+  GitHub Actions, release preflight, governance files, recipe examples, and a reproducible README
+  capture pipeline. Final release evidence is recorded in `docs/v0.5-acceptance.md`.
+
 ## 0.4.1 — 2026-08-17
 
 - Prevent recursive squad explosions by excluding delegated sessions from automatic mode, denying

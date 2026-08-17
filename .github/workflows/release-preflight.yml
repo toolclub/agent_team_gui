@@ -1,0 +1,127 @@
+name: Release preflight
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      expectedVersion:
+        description: Package version without the v prefix
+        required: true
+        type: string
+      gitRef:
+        description: Full Git commit SHA or semver tag to resolve at checkout
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  release-candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.gitRef || github.ref }}
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+      - run: npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+      - name: Resolve release identity
+        id: release
+        shell: bash
+        env:
+          INPUT_VERSION: ${{ inputs.expectedVersion }}
+          INPUT_REF: ${{ inputs.gitRef }}
+        run: |
+          version_pattern='^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'
+          revision_pattern='^([0-9a-f]{40}|v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?)$'
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" ]]; then
+            [[ "$INPUT_VERSION" =~ $version_pattern ]] || { printf 'Invalid expectedVersion\n' >&2; exit 1; }
+            [[ "$INPUT_REF" =~ $revision_pattern ]] || { printf 'gitRef must be a full commit SHA or semver tag\n' >&2; exit 1; }
+            if [[ "$INPUT_REF" == v* && "$INPUT_REF" != "v$INPUT_VERSION" ]]; then
+              printf 'gitRef tag must match expectedVersion\n' >&2
+              exit 1
+            fi
+            printf 'version=%s\n' "$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            tag_version="${GITHUB_REF_NAME#v}"
+            [[ "$GITHUB_REF_NAME" == v* && "$tag_version" =~ $version_pattern ]] || { printf 'Release tag must be v<semver>\n' >&2; exit 1; }
+            printf 'version=%s\n' "$tag_version" >> "$GITHUB_OUTPUT"
+          fi
+          resolved_commit="$(git rev-parse --verify 'HEAD^{commit}')"
+          [[ "$resolved_commit" =~ ^[0-9a-f]{40}$ ]] || { printf 'Checkout did not resolve to a full commit SHA\n' >&2; exit 1; }
+          printf 'commit=%s\n' "$resolved_commit" >> "$GITHUB_OUTPUT"
+      - run: pnpm run preflight
+        env:
+          API_VERSION: 3
+          EXPECTED_VERSION: ${{ steps.release.outputs.version }}
+          EXPECTED_TAG: v${{ steps.release.outputs.version }}
+          RELEASE_REQUIRE_CLEAN: 1
+          RUN_SUPPLEMENTAL_DOCTOR: 1
+      - name: Verify exact GitHub revision
+        run: pnpm run smoke:install
+        env:
+          API_VERSION: 3
+          PLUGIN_SPEC: github:toolclub/dsh-agent-team-gui#${{ steps.release.outputs.commit }}
+      - name: Build release artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          pnpm pack --pack-destination dist
+      - name: Audit exact release artifact
+        shell: bash
+        run: |
+          shopt -s nullglob
+          tarballs=(dist/*.tgz)
+          if [[ ${#tarballs[@]} -ne 1 ]]; then
+            printf 'Expected one release tarball, found %s\n' "${#tarballs[@]}" >&2
+            exit 1
+          fi
+          PACK_TARBALL="${tarballs[0]}" pnpm run audit:pack
+      - name: Smoke exact release artifact
+        shell: bash
+        run: |
+          shopt -s nullglob
+          tarballs=(dist/*.tgz)
+          [[ ${#tarballs[@]} -eq 1 ]] || { printf 'Expected exactly one release tarball\n' >&2; exit 1; }
+          PLUGIN_TARBALL="${tarballs[0]}" API_VERSION=3 pnpm run smoke:install
+      - run: pnpm exec playwright install --with-deps chromium
+      - name: Browser smoke exact release artifact
+        shell: bash
+        run: |
+          shopt -s nullglob
+          tarballs=(dist/*.tgz)
+          [[ ${#tarballs[@]} -eq 1 ]] || { printf 'Expected exactly one release tarball\n' >&2; exit 1; }
+          PLUGIN_TARBALL="${tarballs[0]}" API_VERSION=3 SMOKE_SCREENSHOT_DIR=.artifacts/browser-smoke pnpm run smoke:browser
+      - name: Checksum release artifact
+        shell: bash
+        run: |
+          cd dist
+          sha256sum *.tgz > SHA256SUMS
+      - name: Upload isolated diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-diagnostics-v${{ steps.release.outputs.version }}
+          path: /tmp/dsh-agent-team-gui-*
+          if-no-files-found: ignore
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dsh-agent-team-gui-v${{ steps.release.outputs.version }}
+          path: |
+            dist/*.tgz
+            dist/SHA256SUMS
+            .artifacts/browser-smoke
+          if-no-files-found: error
+          include-hidden-files: true
+          retention-days: 30

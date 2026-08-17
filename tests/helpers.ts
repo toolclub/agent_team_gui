@@ -9,7 +9,7 @@ import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-sub
 import { vi } from 'vitest'
 import AgentTeamService from '../src/index.ts'
 import { AgentId, DispatchId, SquadId } from '../src/types.ts'
-import type { AgentRecord, ProjectSquadDefaultRecord, SessionSquadModeRecord, SquadRecord, SquadRunRecord, SquadVersionRecord } from '../src/types.ts'
+import type { AgentRecord, ProjectSquadDefaultRecord, SessionNextSquadModeRecord, SessionSquadModeRecord, SquadMessageClaimRecord, SquadRecord, SquadRunRecord, SquadVersionRecord } from '../src/types.ts'
 
 export class MemoryTable<K extends string, V> implements KvTable<K, V> {
   private readonly values = new Map<K, V>()
@@ -62,10 +62,12 @@ export const agent = (name: string, model = name.toLowerCase()): AgentRecord => 
 export interface FixtureOptions {
   readonly start?: (provider: string, request: SubagentStartRequest) => ReturnType<SubagentRuntime['start']>
   readonly resolveModelInfo?: LlmRuntime['resolveModelInfo']
+  readonly listProviders?: LlmRuntime['listProviders']
+  readonly listModels?: LlmRuntime['listModels']
   /** Live-agent lookup for the RPC dispatch endpoint; defaults to no live sessions. */
   readonly agentsGet?: (sessionId: string) => unknown
   readonly sessionsGet?: (sessionId: string) => unknown
-  readonly toolSchemas?: () => Array<{ readonly name: string; readonly description: string }>
+  readonly toolSchemas?: (scope?: unknown) => Array<{ readonly name: string; readonly description: string; readonly parameters?: unknown }>
 }
 
 export interface Fixture {
@@ -74,6 +76,8 @@ export interface Fixture {
   readonly agents: MemoryTable<AgentId, AgentRecord>
   readonly squads: MemoryTable<SquadId, SquadRecord>
   readonly modes: MemoryTable<SessionId, SessionSquadModeRecord>
+  readonly nextModes: MemoryTable<SessionId, SessionNextSquadModeRecord>
+  readonly messageClaims: MemoryTable<string, SquadMessageClaimRecord>
   readonly runs: MemoryTable<DispatchId, SquadRunRecord>
   readonly versions: MemoryTable<string, SquadVersionRecord>
   readonly projectDefaults: MemoryTable<string, ProjectSquadDefaultRecord>
@@ -98,6 +102,7 @@ export function createService(options: FixtureOptions = {}): Fixture {
         async dispose() {},
       }
     }),
+    getProvider: () => ({ capabilities: { outputSchema: true, depthLimit: true, toolFilter: true, persona: true } }),
   }
   const llm = {
     resolveModelInfo: options.resolveModelInfo ?? vi.fn(async (provider: string, model: string) => ({
@@ -105,8 +110,8 @@ export function createService(options: FixtureOptions = {}): Fixture {
       id: model,
       name: model,
     })),
-    listProviders: vi.fn(() => [{ id: 'configured', name: 'Configured' }]),
-    listModels: vi.fn(async () => [{ id: 'deepseek-v4', name: 'DeepSeek V4' }]),
+    listProviders: options.listProviders ?? vi.fn(() => [{ id: 'configured', name: 'Configured' }]),
+    listModels: options.listModels ?? vi.fn(async () => [{ id: 'deepseek-v4', name: 'DeepSeek V4' }]),
   }
   ctx.provide('subagents', subagents)
   ctx.provide('llm', llm)
@@ -121,6 +126,8 @@ export function createService(options: FixtureOptions = {}): Fixture {
   const agents = new MemoryTable<AgentId, AgentRecord>()
   const squads = new MemoryTable<SquadId, SquadRecord>()
   const modes = new MemoryTable<SessionId, SessionSquadModeRecord>()
+  const nextModes = new MemoryTable<SessionId, SessionNextSquadModeRecord>()
+  const messageClaims = new MemoryTable<string, SquadMessageClaimRecord>()
   const runs = new MemoryTable<DispatchId, SquadRunRecord>()
   const versions = new MemoryTable<string, SquadVersionRecord>()
   const projectDefaults = new MemoryTable<string, ProjectSquadDefaultRecord>()
@@ -128,6 +135,8 @@ export function createService(options: FixtureOptions = {}): Fixture {
     agentsTable: agents,
     squadsTable: squads,
     sessionModesTable: modes,
+    nextModesTable: nextModes,
+    messageClaimsTable: messageClaims,
     runsTable: runs,
     squadVersionsTable: versions,
     projectDefaultsTable: projectDefaults,
@@ -137,7 +146,7 @@ export function createService(options: FixtureOptions = {}): Fixture {
     options: { provider: 'main-provider', model: 'main-model', maxTokens: 32_000 },
     session: { header: { cwd: '/workspace/project' } },
   } as unknown as Agent
-  return { ctx, service, agents, squads, modes, runs, versions, projectDefaults, starts, parent }
+  return { ctx, service, agents, squads, modes, nextModes, messageClaims, runs, versions, projectDefaults, starts, parent }
 }
 
 export async function populate(): Promise<Fixture> {

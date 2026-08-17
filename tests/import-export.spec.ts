@@ -20,7 +20,7 @@ describe('AgentTeamService export/import', () => {
     const doc = await source.service.exportDefinitions()
 
     expect(doc.format).toBe('agent-team-gui/definitions')
-    expect(doc.version).toBe(1)
+    expect(doc.version).toBe(2)
     expect(doc.agents).toHaveLength(3)
     expect(doc.squads).toHaveLength(1)
 

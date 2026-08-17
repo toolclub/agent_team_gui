@@ -1,0 +1,25 @@
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      deepseek-harness:
+        patterns:
+          - "@deepseek-ai/*"
+      test-tooling:
+        dependency-type: development
+        patterns:
+          - "vitest"
+          - "typescript"
+          - "tsdown"
+          - "playwright"
+          - "happy-dom"
+          - "@testing-library/*"
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 5

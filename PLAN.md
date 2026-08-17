@@ -1,13 +1,32 @@
-# agent_team_gui dsh Plugin — Completed Implementation Plan
+# dsh-agent-team-gui — v0.5 Implementation and Historical Design
 
-## Completion status (v0.4, 2026-08-17)
+## Completion status (v0.5, 2026-08-17)
 
-P1–P5 and the v0.4 product pass are implemented and verified. The package now ships the durable
-host service, guaranteed pre-generation squad execution, optional model-facing
-`dispatch_to_squad`, serial/bounded-parallel orchestration, planning leads, retries and fallbacks,
-official token usage, durable run/revision history, loopback-only Connection RPC, Settings CRUD,
-composer UI and Team Runs view, self-contained Git `prepare`, declarations, bilingual
-documentation, and bundle patch.
+The v0.5 implementation pass is complete; isolated local release evidence is recorded in
+[`docs/v0.5-acceptance.md`](docs/v0.5-acceptance.md), with the public full-commit Git install gate
+intentionally performed only after push. The package now ships a durable definition and
+run service, explicit Team/Solo/Inherited plus one-shot/project modes, guaranteed idempotent
+normal-send orchestration, dynamic lead-model planning, bounded DAG waves, optional quality and
+background flows, official Token projection coverage, reproducible versions/recipes, a layered Web
+client, bilingual documentation, and hermetic release engineering.
+
+v0.5 reliability decisions supersede the v0.4 product pass described later in this historical plan:
+
+- Every actual run stores a normalized plan. Whole/member retry replays the original assignment,
+  order, dependencies, and route semantics instead of silently replanning.
+- Delegated lineage, dynamic subagent-tool denial, bounded prompts, and a durable latest-human-
+  message claim prevent recursive descendant explosions and duplicate model-tool dispatch.
+- Provider usage is live and attempt-aware. Run/Insights surfaces distinguish full, partial, and
+  unavailable metering and never present Tokens as currency.
+- Definition mutations use cancellation-aware serialized units of work and coherent read snapshots;
+  import/restore previews report shared-team impact before an atomic apply.
+- Legacy durable rows and v1 definition exports use permissive compatibility readers; v0.5 writes
+  use bounded schemas. Old runs without a stored plan are not offered an unfaithful retry.
+- The Web UI uses the official locale and theme services, strict RPC v3 response validation,
+  reconnect self-healing, dirty-form guards, keyboard/focus handling, and responsive readable type.
+- Release gates are required to cover Host and rendered Client tests, clean build/tarball closure,
+  secret scanning, fresh DSH rc.6 install/restart, browser accessibility/reconnect, exact Git
+  revision, and six sanitized README captures.
 
 Resolved research decisions supersede any earlier proposal below:
 
@@ -22,12 +41,19 @@ Resolved research decisions supersede any earlier proposal below:
 - Out-of-tree custom Session event registration is not currently supported. Observability uses a
   durable plugin run table, the official `tokenUsage` projection, native child sessions/descriptors,
   standard tool results where applicable, and host logs; no unsafe `squad/*` events are appended.
-- Validation completed: 36 tests, Host/Client/test TypeScript checks, build, pack contents, and
-  browser runtime checks. The screenshots in `assets/` are captured from the real Web profile.
+- The old 36-test count and v0.4 screenshots are retained below only as implementation history;
+  v0.5 evidence and screenshots are authoritative for release.
+
+> **Historical boundary:** everything from Section 1 onward is the frozen v0.4 research and
+> milestone record. Its package names, three-table sketch, single-file Client layout, commands, and
+> provider-selection pseudocode are not the current implementation contract. Use the v0.5 product
+> spec, acceptance record, current source tree, package manifest, and bilingual READMEs for current
+> development and installation.
 
 ## 1. API Confirmation Summary
 
-All APIs below were verified against the actual codebase at `/Users/leizihao/workspace/code/deepseek_harness_plugins/deepseek-harness`. Each citation is a real file:line.
+All APIs below were verified against the adjacent DeepSeek Harness source checkout. Each citation
+uses a repository-relative file and line reference.
 
 **Plugin lifecycle (Report 1)**
 - Service base class: `vendor/cordis/src/service.ts:11` — abstract, `constructor(ctx, name)` auto-registers via `ctx.reflect.provide`; `[Service.init]` is the async post-construction method.

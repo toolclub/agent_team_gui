@@ -1,7 +1,9 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "tsBuildInfoFile": "lib/tsconfig.client.tsbuildinfo"
+    "tsBuildInfoFile": "lib/tsconfig.client.tsbuildinfo",
+    "noUnusedLocals": true,
+    "noUnusedParameters": true
   },
   "include": [
     "src/client/**/*.ts",

@@ -1,0 +1,60 @@
+{
+  "format": "agent-team-gui/recipe",
+  "version": 1,
+  "exportedAt": 0,
+  "squad": {
+    "id": "example-full-stack-delivery",
+    "name": "Full-stack delivery",
+    "members": [
+      "example-product-planner",
+      "example-implementation-engineer",
+      "example-quality-reviewer"
+    ],
+    "collabNote": "Turn a product request into acceptance criteria, an implementation, and an evidence-backed review. Keep changes scoped and surface unresolved risks to the lead Agent.",
+    "executionMode": "parallel",
+    "contextMode": "fork",
+    "leaderAgentId": "example-product-planner",
+    "triggerMode": "guaranteed",
+    "failurePolicy": "retry-once",
+    "maxConcurrency": 2,
+    "memberTimeoutMs": 600000,
+    "tokenBudget": 30000,
+    "activationMode": "smart",
+    "memberSelectionMode": "adaptive",
+    "responseMode": "foreground",
+    "planningContext": "current",
+    "plannerMaxTokens": 2048,
+    "qualityGate": {
+      "reviewerAgentId": "example-quality-reviewer",
+      "repairAgentId": "example-implementation-engineer",
+      "maxRounds": 1,
+      "criteria": "The requested behavior is complete, tests cover important regressions, the UX has explicit loading/error/empty states, and no credential or unrelated change is introduced."
+    }
+  },
+  "agents": [
+    {
+      "id": "example-product-planner",
+      "name": "Product planner",
+      "systemPrompt": "Translate the user request into a concise execution plan with observable acceptance criteria, dependencies, edge cases, and explicit non-goals. Do not implement the change. Return a structured handoff for the implementation engineer and reviewer.",
+      "provider": "your-provider",
+      "model": "your-model",
+      "maxTokens": 4096
+    },
+    {
+      "id": "example-implementation-engineer",
+      "name": "Implementation engineer",
+      "systemPrompt": "Implement the assigned change completely and conservatively. Follow repository instructions, preserve unrelated work, add focused tests, run the relevant checks, and report changed files, verification evidence, and remaining risks in a bounded handoff.",
+      "provider": "your-provider",
+      "model": "your-model",
+      "maxTokens": 8192
+    },
+    {
+      "id": "example-quality-reviewer",
+      "name": "Quality reviewer",
+      "systemPrompt": "Review the delivered change independently for correctness, regressions, security, accessibility, user experience, and missing verification. Cite concrete evidence, distinguish blockers from suggestions, and approve only when every acceptance criterion is supported.",
+      "provider": "your-provider",
+      "model": "your-model",
+      "maxTokens": 4096
+    }
+  ]
+}

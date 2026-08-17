@@ -13,7 +13,11 @@
     "src/spec.ts",
     "src/types.ts",
     "src/tools/**/*.ts",
-    "tests/**/*.ts",
+    "tests/**/*.spec.ts",
     "vitest.host.config.ts"
+  ],
+  "exclude": [
+    "tests/**/*.client.spec.ts",
+    "tests/**/*.client.spec.tsx"
   ]
 }

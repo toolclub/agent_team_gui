@@ -3,7 +3,7 @@ import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
-import AgentTeamService, { AgentTeamError } from '../src/index.ts'
+import { AgentTeamError } from '../src/index.ts'
 import { createDispatchToSquadTool } from '../src/tools/dispatch-to-squad.ts'
 import { AgentId, SquadId } from '../src/types.ts'
 import { agent, createService, populate, researcherId, reviewerId, squadId, writerId } from './helpers.ts'
@@ -44,14 +44,14 @@ describe('AgentTeamService CRUD', () => {
       executionOrder: [reviewerId, writerId, researcherId],
       leaderAgentId: writerId,
     })
-    await service.createSquad({ name: 'Second', members: [writerId] }, SquadId('second'))
+    await service.createSquad({ name: 'Second', members: [writerId, researcherId] }, SquadId('second'))
 
     await expect(service.deleteAgent(writerId)).resolves.toBe(true)
     expect(service.getSquad(squadId)?.members).toEqual([researcherId, reviewerId])
     expect(service.getSquad(squadId)?.executionOrder).toEqual([reviewerId, researcherId])
     expect(service.getSquad(squadId)?.leaderAgentId).toBeUndefined()
     expect(service.listSquadVersions(squadId).map(item => item.version)).toEqual([2, 1])
-    expect(service.getSquad(SquadId('second'))?.members).toEqual([])
+    expect(service.getSquad(SquadId('second'))?.members).toEqual([researcherId])
     expect(service.getAgent(writerId)).toBeUndefined()
   })
 
@@ -148,19 +148,19 @@ describe('AgentTeamService CRUD', () => {
 
   it('claims each automatic user message once and honors durable run traces after restart', async () => {
     const state = await populate()
-    const claim = (agentValue: Agent, messageId: string): boolean =>
+    const claim = (agentValue: Agent, messageId: string): Promise<boolean> =>
       (state.service as unknown as {
-        claimGuaranteedMessage(agent: Agent, id: string): boolean
-      }).claimGuaranteedMessage(agentValue, messageId)
+        claimGuaranteedMessage(agent: Agent, id: string, kind: 'solo' | 'team'): Promise<boolean>
+      }).claimGuaranteedMessage(agentValue, messageId, 'team')
 
-    expect(claim(state.parent, 'message-1')).toBe(true)
-    expect(claim(state.parent, 'message-1')).toBe(false)
+    await expect(claim(state.parent, 'message-1')).resolves.toBe(true)
+    await expect(claim(state.parent, 'message-1')).resolves.toBe(false)
     await state.service.dispatch({ squadId, task: 'once' }, state.parent, new AbortController().signal, {
       sessionId: state.parent.id,
       sourceMessageId: 'durable-message',
     })
     const resumed = { id: state.parent.id, session: state.parent.session } as Agent
-    expect(claim(resumed, 'durable-message')).toBe(false)
+    await expect(claim(resumed, 'durable-message')).resolves.toBe(false)
   })
 
   it('diagnoses every primary and fallback model route without mutating the team', async () => {
@@ -193,12 +193,14 @@ describe('AgentTeamService dispatch', () => {
             result: Promise.resolve({
               output: [],
               structured: {
+                decision: 'run',
+                reason: 'The feature needs the full delivery workflow.',
                 summary: 'Design, implement, then review.',
                 memberOrder: [researcherId, writerId, reviewerId],
                 assignments: [
-                  { agentId: researcherId, task: 'DESIGN-SCOPE: define the architecture and acceptance criteria.' },
-                  { agentId: writerId, task: 'IMPLEMENT-SCOPE: implement only the approved architecture.' },
-                  { agentId: reviewerId, task: 'REVIEW-SCOPE: audit the implementation against the criteria.' },
+                  { agentId: researcherId, task: 'DESIGN-SCOPE: define the architecture and acceptance criteria.', dependsOn: [] },
+                  { agentId: writerId, task: 'IMPLEMENT-SCOPE: implement only the approved architecture.', dependsOn: [researcherId] },
+                  { agentId: reviewerId, task: 'REVIEW-SCOPE: audit the implementation against the criteria.', dependsOn: [writerId] },
                 ],
               },
               stopReason: 'completed' as const,
@@ -235,7 +237,7 @@ describe('AgentTeamService dispatch', () => {
     expect(requests[0]).toMatchObject({
       provider: 'fork',
       request: {
-        agentOptions: { provider: 'main-provider', model: 'main-model', maxTokens: 32_000 },
+        agentOptions: { provider: 'main-provider', model: 'main-model', maxTokens: 2_048 },
         toolFilter: { allow: [] },
         outputSchema: { type: 'object' },
       },
@@ -291,7 +293,7 @@ describe('AgentTeamService dispatch', () => {
       { sourceMessageId: 'fallback-plan-message' },
     )
 
-    expect(result.plan).toMatchObject({ planner: 'main-agent', warning: expect.stringContaining('complete squad permutation') })
+    expect(result.plan).toMatchObject({ planner: 'deterministic-fallback', warning: expect.stringContaining('valid plan') })
     expect(result.plan?.assignments).toHaveLength(3)
     expect(new Set(result.plan?.assignments.map(item => item.task)).size).toBe(3)
     expect(result.plan?.assignments.map(item => item.task)).toEqual([
@@ -308,19 +310,20 @@ describe('AgentTeamService dispatch', () => {
         { name: 'read_file', description: 'Read' },
         { name: 'dispatch_to_squad', description: 'Dispatch' },
         { name: 'subagent', description: 'Delegate' },
+        { name: 'workflow', description: 'Orchestrate subagents' },
       ],
     })
     await state.agents.put(researcherId, {
       ...agent('Researcher'),
-      toolScope: { allow: ['read_file', 'dispatch_to_squad', 'subagent'] },
+      toolScope: { allow: ['read_file'] },
     })
     await state.squads.put(squadId, { name: 'Delivery', members: [researcherId] })
 
     await state.service.dispatch({ squadId, task: 'safe work' }, state.parent, new AbortController().signal)
 
     expect(state.starts[0]?.request.toolFilter).toEqual({
-      allow: ['read_file', 'dispatch_to_squad', 'subagent'],
-      deny: ['dispatch_to_squad', 'subagent'],
+      allow: ['read_file'],
+      deny: ['dispatch_to_squad', 'subagent', 'workflow'],
     })
     expect(state.starts[0]?.request.prompt[0]).toMatchObject({
       type: 'text', text: expect.stringContaining('do not create or delegate to subagents'),
@@ -558,7 +561,7 @@ describe('AgentTeamService dispatch', () => {
     expect(result.status).toBe('partial')
     expect(state.service.getRun(result.dispatchId)?.members).toMatchObject([
       { agentId: researcherId, status: 'completed' },
-      { agentId: writerId, status: 'skipped', error: expect.stringContaining('token-budget') },
+      { agentId: writerId, status: 'skipped', error: expect.stringContaining('budget') },
     ])
   })
 
@@ -642,6 +645,9 @@ it('exposes memberOrder in the model-facing dispatch tool schema', () => {
     text: expect.stringContaining('"childId": "child-1"'),
   })
   expect(rendered[0]).toMatchObject({
-    text: expect.stringContaining('"partial evidence"'),
+    text: expect.not.stringContaining('partial evidence'),
+  })
+  expect(rendered[0]).toMatchObject({
+    text: expect.stringContaining('Full output is available in Run Center'),
   })
 })

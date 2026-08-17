@@ -2,273 +2,235 @@
 
 [English](README.md) | [简体中文](README-zh.md)
 
-[![GitHub stars](https://img.shields.io/github/stars/toolclub/dsh-agent-team-gui?style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/stargazers)
+[![CI](https://github.com/toolclub/dsh-agent-team-gui/actions/workflows/ci.yml/badge.svg)](https://github.com/toolclub/dsh-agent-team-gui/actions/workflows/ci.yml)
 [![GitHub release](https://img.shields.io/github/v/release/toolclub/dsh-agent-team-gui?include_prereleases&style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/releases)
+[![GitHub stars](https://img.shields.io/github/stars/toolclub/dsh-agent-team-gui?style=flat-square)](https://github.com/toolclub/dsh-agent-team-gui/stargazers)
 [![MIT license](https://img.shields.io/github/license/toolclub/dsh-agent-team-gui?style=flat-square)](LICENSE)
 
-**Persistent multi-model agent squads for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
-Give every member its own model and tool policy, save reusable teams in Settings, then select a
-squad beside the composer and keep chatting normally.
+**Persistent, reusable multi-model Agent teams for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness).**
+Give each member its own model, role, fallback route, token limit, and tool policy. Select a saved
+team beside the normal composer; the lead model plans the work, runs a bounded dependency graph,
+and synthesizes the result.
 
-![Manage persistent multi-model squads in DeepSeek Harness Settings](assets/team-settings-v0.4.jpg)
+![Manage a persistent multi-model team in DeepSeek Harness Settings](assets/v0.5-teams-settings.png)
 
-## 60-second install
+## Why this plugin
+
+A team is a reusable product object, not a one-off dispatch form. Create it once in **Settings →
+Teams**, then use it across projects and conversations.
+
+| Capability | User outcome |
+| --- | --- |
+| One model and tool policy per member | Combine a planner, implementer, reviewer, or specialist without forcing one route on everyone |
+| Dynamic workflow planning by default | The active conversation's model assigns focused work and dependencies from the current request |
+| Team / Solo / Inherited modes | Choose a durable conversation override, a project default, or a one-message exception without ambiguous switches |
+| Bounded DAG, retries, quality gate, background work | Long work is observable, cancellable, finite, and restart-safe |
+| Official provider Token usage | See input, cache-read, cache-write, and output Tokens with full/partial/unavailable coverage—never invented prices |
+| Versions, recipes, and definition backup | Reproduce a team, share it without credentials, preview impact, and remap model routes before applying |
+
+## Install
+
+Requirements: DeepSeek Harness `>=0.1.0-rc.5 <0.2.0`, the **Web** profile, Node.js
+`>=22.19.0 <23` or `>=24.0.0` (Node.js 23 is not supported), pnpm, and at least one configured DSH
+provider/model route.
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.1
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.5.0
 dsh --profile web
 ```
 
-Then open **Settings → Teams**, create a squad, select it beside the conversation composer, and
-turn on **Squad mode**. The plugin uses your existing dsh model routes and credential store; it
-never stores API keys.
+Git dependencies run this repository's `prepare` build. On pnpm 10 or later, the first command may
+ask you to authorize that build. Add only this reviewed package to the Web profile file shown by
+pnpm (normally `~/.dsh/profiles/web/pnpm-workspace.yaml`), then repeat the same pinned command:
 
-| What you get | Why it matters |
-| --- | --- |
-| One provider/model and tool policy per agent | Mix a strong planner, fast implementer, and strict reviewer in one squad |
-| Global persistent agents and squads | Build a team once, then reuse it across projects and conversations |
-| Fixed or Main-Agent-planned execution order | Pin a repeatable workflow, or let the conversation's Main Agent assign every member for each task |
-| Serial/parallel execution with spawn/fork/chain context | Match collaboration topology to the task instead of forcing one pattern |
-| Live run center plus official token usage | Inspect plans, outputs, retries, failures, and each member's real provider-reported tokens |
-
-![Enable a saved squad directly in a DeepSeek Harness conversation](assets/squad-mode-v0.4.jpg)
-
-![Inspect member progress and provider-reported token usage](assets/team-runs-v0.4.jpg)
-
-If this workflow is useful, a [GitHub Star](https://github.com/toolclub/dsh-agent-team-gui) helps
-other DeepSeek Harness users discover it. Bug reports and real squad recipes are equally welcome.
-
-> [!WARNING]
-> Both dsh and this plugin are developer previews. The plugin targets dsh `>=0.1.0-rc.5 <0.2.0`
-> and requires Node.js 22.19 or later. dsh can make breaking changes before a stable release; pin
-> both dsh and this plugin when reproducibility matters.
-
-## Key distinction
-
-A squad does not have to share one model configuration. Every agent can independently select an
-existing dsh provider/model route, `maxTokens`, and tool allow/deny policy. Save those agents as
-global reusable definitions in Settings, combine them into persistent squads, and select a squad
-per conversation. When squad collaboration is enabled, an ordinary Send enters the collaboration
-flow: the squad follows its optional fixed member order, or lets the Main Agent dynamically plan a
-role-specific assignment for every configured member and their execution order when no order is pinned.
-
-## Status and architecture
-
-```text
-Settings --> global agent/squad definitions --+
-Conversation --> per-session squad mode -------+--> dsh storage-domain --> JSON backend
-                                              |
-Conversation squad selector + collaboration toggle
-                                              |
-ordinary Send --> fixed member order, if set --+
-              `-> Main Agent plans every member otherwise
-                                              |
-                  Agent A / Agent B / Agent C
-                                              |
-             assistant response + traceable child sessions
-
-Natural-language request --> dispatch_to_squad (model tool) --> same squad runtime
+```yaml
+allowBuilds:
+  dsh-agent-team-gui: true
 ```
 
-The package contains a Web client, loopback-only Connection RPC, host service, durable registry,
-and model-facing dispatch tool. **Settings → Teams** manages global definitions. Each
-conversation gets a squad selector and collaboration toggle; after selecting a squad and enabling
-collaboration, the user sends through the ordinary composer rather than a separate dispatch form.
-Provider and model choices are read from dsh's existing model configuration.
+Restart an already-running DSH Web process after installing or updating. Open **Settings → Teams**,
+create or import members and a team, then open the control beside the conversation composer.
 
-Current capabilities:
+> [!TIP]
+> If `dsh` is not on `PATH`, cloning Harness alone did not install a global command. From the
+> Harness checkout use `pnpm dsh --version`, and replace `dsh ...` in this README with
+> `pnpm --dir /absolute/path/to/deepseek-harness dsh ...`.
 
-- Durable agents, squads, immutable squad revisions, run history, per-session selection, and optional
-  per-project defaults through dsh `storage-domain`.
-- Settings forms, quick-start templates, safe merge/replace import preview, cloning, revision restore,
-  and a model-route diagnostic for global agents and squads.
-- Per-conversation selector and toggle. In the default **Guaranteed** mode, ordinary Send runs the
-  squad at the host boundary before the lead model answers; it no longer depends on the model
-  deciding to call a tool. A legacy model-tool mode remains available.
-- Optional fixed order; otherwise the conversation's Main Agent is the default workflow planner and
-  produces a complete, role-specific assignment and order for every configured member. Invalid plans
-  safely fall back to one differentiated role-scoped assignment per member. The optional planning
-  lead is retained only as a fallback for manual dispatch paths without main-conversation context.
-- Per-agent primary and fallback `{ provider, model, maxTokens? }` routes plus visual tool
-  allow/deny policies; no API-key storage.
-- Model-callable `dispatch_to_squad` with optional explicit per-agent assignments.
-- Serial or bounded-parallel execution; `spawn`, `fork`, or serial-only `chain` context; member
-  timeout, continue/stop/retry-once policy, fallback routes, cancellation, and a soft token budget.
-- A per-conversation **Team runs** view and live composer dock with the plan, member progress,
-  outputs, retries, timings, child IDs, and official dsh `tokenUsage` buckets. Monetary prices are
-  intentionally not guessed because Harness providers do not expose a stable price table.
-
-## Prerequisites
-
-- The dsh **Web profile**, version `>=0.1.0-rc.5 <0.2.0`. This bundle is not a headless
-  or bare-profile bundle.
-- Node.js 22.19 or later.
-- pnpm on `PATH`. The Git-install notes below apply to pnpm 10 and later.
-- At least one provider/model route configured in dsh. Configure credentials through dsh Settings
-  or its credentials mechanism, never in this plugin's records.
-
-The commands below assume an installed `dsh` executable. Cloning the DeepSeek Harness source does
-**not** install that executable globally. From the Harness repository root, verify the source CLI
-with:
+Verify the composed bundle without installing `rg`:
 
 ```sh
-pnpm dsh --version
+dsh --profile web --dump-config | grep -E "agent-team-gui|dsh-agent-team-gui"
 ```
 
-When running from another directory, replace every `dsh ...` below with
-`pnpm --dir /absolute/path/to/deepseek-harness dsh ...`.
-
-## Install from a local directory
-
-Run each command from the directory that contains `dsh-agent-team-gui`.
-
-1. Install the plugin's development dependencies:
-
-   ```sh
-   pnpm --dir ./dsh-agent-team-gui install
-   ```
-
-   Expected: pnpm finishes successfully and creates or updates `dsh-agent-team-gui/node_modules`.
-
-2. Build the checkout before linking it into a profile:
-
-   ```sh
-   pnpm --dir ./dsh-agent-team-gui run build
-   ```
-
-   Expected: the command exits with status 0 and produces the runtime entry under
-   `dsh-agent-team-gui/lib/`.
-
-3. Add the local bundle to the Web profile:
-
-   ```sh
-   dsh plugin --profile web add -w ./dsh-agent-team-gui
-   ```
-
-   Expected: pnpm reports `dsh-agent-team-gui` as added. dsh must not print the warning that the
-   package "declares no dsh.bundle".
-
-4. Inspect the composed configuration without booting it:
-
-   ```sh
-   dsh --profile web --dump-config
-   ```
-
-   Expected: output contains a `dsh-agent-team-gui` bundle layer and an `agent-team-gui` row.
-
-5. Start the profile:
-
-   ```sh
-   dsh --profile web
-   ```
-
-   Expected: dsh starts normally, **Settings → Teams** is available, and conversations show
-   the squad selector and collaboration toggle. When info-level host logging is enabled, the log
-   also contains
-   `[agent-team-gui] v0.4 registry, guaranteed conversation dispatch, run center and token usage ready`.
-
-## Install from a tarball
-
-A built tarball contains compiled output and therefore needs no install-script allowance.
-
-1. Install dependencies and build:
-
-   ```sh
-   pnpm --dir ./dsh-agent-team-gui install
-   pnpm --dir ./dsh-agent-team-gui run build
-   ```
-
-   Expected: both commands exit with status 0 and `dsh-agent-team-gui/lib/` exists.
-
-2. Create the tarball:
-
-   ```sh
-   pnpm --dir ./dsh-agent-team-gui pack
-   ```
-
-   Expected: pnpm prints the generated archive name, normally
-   `dsh-agent-team-gui-0.4.1.tgz`. Use the exact path printed by your pnpm version below.
-
-3. Install that archive:
-
-   ```sh
-   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.1.tgz
-   ```
-
-   Expected: pnpm reports `dsh-agent-team-gui` as added without an `allowBuilds` prompt. If `pack`
-   printed the archive elsewhere, substitute that exact path.
-
-4. Verify the layer:
-
-   ```sh
-   dsh --profile web --dump-config
-   ```
-
-   Expected: the dump contains the `dsh-agent-team-gui` layer and `agent-team-gui` row.
-
-## Install from GitHub
-
-Git dependencies contain source rather than prebuilt release artifacts. This repository therefore
-ships a self-contained `prepare` path that builds its runtime entry without assuming a sibling dsh
-monorepo checkout.
-
-You can also send this single sentence to a DeepSeek Harness agent that has terminal access:
-
-> Follow the README at https://github.com/toolclub/dsh-agent-team-gui and install the plugin into the
-> DeepSeek Harness web profile; resolve and pin the current main commit SHA, configure pnpm
-> `allowBuilds` as documented, and verify with `dsh --profile web --dump-config`.
-
-1. Pin and install a reviewed commit:
-
-   ```sh
-   dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<commit-sha>
-   ```
-
-   Expected with pnpm 10 or later on the first attempt: installation may fail because pnpm blocks
-   the Git dependency's `prepare` script. pnpm prints the **exact package key**, and dsh prints the
-   profile directory whose `pnpm-workspace.yaml` must be changed.
-
-2. Add exactly the key pnpm printed to that profile's workspace file. With the default dsh home,
-   edit `~/.dsh/profiles/web/pnpm-workspace.yaml` (or
-   `$DSH_HOME/profiles/web/pnpm-workspace.yaml` when `DSH_HOME` is set):
-
-   ```yaml
-   allowBuilds:
-     dsh-agent-team-gui: true
-   ```
-
-   Expected: the YAML now preserves any existing workspace settings and contains the printed key
-   under `allowBuilds`. Do not guess the key if pnpm printed a different one.
-
-3. Re-run the same pinned install:
-
-   ```sh
-   dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<commit-sha>
-   ```
-
-   Expected: pnpm is allowed to run `prepare`, builds the package, and reports it as added.
-
-4. Verify the bundle layer:
-
-   ```sh
-   dsh --profile web --dump-config
-   ```
-
-   Expected: the dump contains the `dsh-agent-team-gui` layer and `agent-team-gui` row.
-
-5. Restart any running dsh Web process, then refresh the browser. Installing or updating replaces
-   files on disk but cannot replace an already loaded host module. The UI performs an RPC revision
-   handshake and shows an explicit restart message if client and host revisions do not match.
+Expected output contains both the `dsh-agent-team-gui` bundle layer and the `agent-team-gui` row.
 
 > [!CAUTION]
-> `allowBuilds` authorizes that package to execute code on your machine during installation. This
-> code runs outside every dsh agent sandbox. Allow only packages whose source you trust, review the
-> selected revision, and pin `github:owner/repo#<sha>` so later pushes cannot silently change what
-> executes. A built tarball avoids this build permission.
+> `allowBuilds` lets the selected Git dependency execute its build on your machine. Review and pin
+> a tag or full commit SHA. A compiled release tarball does not need Git `prepare` permission.
 
-## Configuration
+## First team in five steps
 
-The bundle inserts this host row:
+1. In **Settings → Members**, create reusable members. Pick a configured provider/model, write a
+   narrow role prompt, optionally add a fallback route, and grant only the tools that role needs.
+2. In **Settings → Teams**, create a team and select those members. Leave **Fixed order** off for
+   dynamic planning, or enable it for a repeatable serial pipeline.
+3. Choose **Always**, **Smart**, or **Manual** activation; all members or an adaptive subset;
+   foreground or background response; and optional resilience, budget, or review controls.
+4. Beside the normal composer choose **Team**, **Solo**, or **Inherited**. You can also queue a
+   different team or Solo for only the next eligible message, or set a project default.
+5. Send the task normally. Open **Team runs** to inspect the plan, stages, members, review/repair
+   rounds, outputs, errors, timings, retries, and official Token coverage.
+
+![Choose Team, Solo, or Inherited beside the normal composer](assets/v0.5-composer-mode.png)
+
+## How orchestration works
+
+```mermaid
+flowchart LR
+    U["Normal user message"] --> M{"Conversation mode"}
+    M -->|"Solo"| L["Lead Agent answers normally"]
+    M -->|"Team / inherited default"| A{"Activation"}
+    A -->|"Manual"| L
+    A -->|"Smart may skip"| P["Bounded lead-model planner"]
+    A -->|"Always"| P
+    P --> D["Validated acyclic plan"]
+    D --> W1["Ready member wave"]
+    W1 --> W2["Dependent member wave"]
+    W2 --> Q{"Optional quality gate"}
+    Q -->|"Approved / disabled"| H["Bounded handoffs"]
+    Q -->|"At most 2 repairs"| R["Named repair owner"]
+    R --> Q
+    H --> L
+    D -. "live state + official Tokens" .-> C["Run Center and Insights"]
+```
+
+With no fixed order, the plugin uses the active conversation's provider/model route in a bounded,
+tool-free planner child. It receives the member roles and returns structured assignments plus an
+acyclic dependency graph. It does not turn one member into a replacement for the whole team. A
+bad, cyclic, or unavailable plan falls back to deterministic role-scoped assignments.
+
+Ready DAG nodes run up to `maxConcurrency`. Dependants receive only bounded structured handoffs;
+full member output remains in durable run history. A fixed member order is an explicit serial
+override and bypasses DAG planning.
+
+### Activation and selection
+
+- **Always** runs the selected team for every eligible top-level user message.
+- **Smart** lets the bounded planner skip unsuitable/trivial work.
+- **Manual** keeps ordinary sends Solo; queue the team for the next message or use the model tool.
+- **All members** assigns each configured member exactly once.
+- **Adaptive** lets Smart planning select the smallest useful non-empty subset.
+
+### Conversation modes
+
+- **Team** is an explicit durable team selection for this conversation.
+- **Solo** is an explicit durable opt-out, even when the project has a default team.
+- **Inherited** removes the conversation override and follows the project default when one exists.
+- **Next message** is a separate crash-safe one-shot Team or Solo choice, consumed exactly once.
+
+These states remain interactive after page refresh, cold Host startup, and live reconnect. An empty
+or temporarily unavailable catalog never silently deletes a saved selection.
+
+### Safety bounds
+
+- Planner, member, reviewer, and repair prompts put the exclusive role and no-delegation contract
+  before a bounded excerpt of user content.
+- Delegated sessions cannot dispatch another team. Detected DSH subagent tools—including renamed
+  registrations—are denied inside team children.
+- One durable claim binds automatic and model-tool dispatch to the latest human message, so repeated
+  tool calls cannot create hundreds of duplicate teams.
+- Member timeout, concurrency, retry-once, soft team Token budget, and quality rounds are finite.
+- A retry creates a linked immutable run and replays the original normalized assignments, order,
+  and DAG; it does not silently ask the model to invent a different workflow.
+
+## Run Center and Token usage
+
+![Inspect the DAG, member state, review rounds, and Token buckets](assets/v0.5-run-center.png)
+
+Every execution is written before planning starts. The Run Center exposes foreground/background
+state, live phase, elapsed time, child IDs, complete outputs, bounded handoffs, stop, linked whole
+or member retry, export, filters, and retention-safe clear.
+
+The plugin reuses DSH's official `tokenUsage` projection and keeps four buckets:
+
+- uncached input;
+- cache read;
+- cache write;
+- output.
+
+Planner, member, review, and repair usage remain separately attributable. Coverage is explicitly
+**full**, **partial**, or **unavailable** at run and retry-attempt level. Before a provider reports a
+sample, the UI says **Metering…** instead of showing a false zero. Tokens are not money; the plugin
+does not guess prices that Harness providers do not publish through a stable pricing contract.
+
+![Compare durable usage and completion insights without fabricated prices](assets/v0.5-insights.png)
+
+## Quality gate and background runs
+
+An optional quality gate names one reviewer, one repair owner, explicit criteria, and `0..2` repair
+rounds. A rejection can rerun only that repair owner, followed by the named reviewer. It cannot
+create arbitrary agents or recurse.
+
+Foreground runs finish before the lead Agent synthesizes bounded handoffs. Background runs return a
+short acknowledgement and stay visible in the plugin Run Center; when the official DSH Jobs service
+is present, the same run is also registered there with a shared cancel hook. Without that optional
+service, the plugin falls back to process-local background execution; a Host restart then reconciles
+unfinished durable state as **Interrupted** rather than pretending it completed.
+
+## Versions, recipes, and definition backup
+
+![Preview a recipe, conflicts, affected teams, and primary/fallback route remapping](assets/v0.5-recipes.png)
+
+- Each saved team version includes immutable snapshots of all referenced member definitions.
+- Restore is preview-first and warns when a shared member would change another team.
+- Recipes contain one team and its members, never provider credentials. Import supports **Copy** or
+  **Merge**, conflict preview, and separate primary/fallback route remapping.
+- Definition backup exports agents and teams. Import is preview-first with **Merge** or **Replace**;
+  replace reports deletions, dangling mode/default cleanup, and affected teams before confirmation.
+- Multi-table writes are serialized and use compensating rollback on validation, cancellation, or
+  storage failure. Readers see either the previous or committed definition graph, not a half-import.
+- Remote recipe URLs are disabled in v0.5. Import a reviewed local JSON file; this intentionally
+  avoids exposing an unprotected server-side fetch/SSRF surface.
+
+Start with the credential-free
+[full-stack delivery recipe](examples/full-stack-delivery.recipe.json), preview it, and remap its
+`your-provider / your-model` placeholders to routes configured in your own DSH profile.
+
+Definition exports include member system prompts and model route names. Run exports additionally
+include the user task and member outputs. Review those files before sharing them.
+
+## Settings reference
+
+### Member
+
+| Field | Meaning |
+| --- | --- |
+| Name and role prompt | Durable identity and exclusive instructions for this member |
+| Primary provider/model | Existing DSH route; credentials stay in DSH |
+| Fallback provider/model | Optional paired route for retry-once |
+| `maxTokens` | Hard per-attempt output ceiling sent to the provider |
+| Tool allow/deny | Least-privilege visibility for registered DSH tools; recursive team/subagent tools remain denied |
+
+### Team
+
+| Field | Meaning |
+| --- | --- |
+| Members and collaboration note | Reusable member definitions plus team-level coordination guidance |
+| Fixed order | Complete serial permutation; leave off for dynamic assignments and DAG dependencies |
+| Execution/context | Serial or bounded parallel; `spawn`, `fork`, or serial-only `chain` |
+| Activation/selection | Always, Smart, or Manual; all members or adaptive subset |
+| Response | Foreground synthesis or observable background run |
+| Planner | Current/recent/full context and a bounded planner Token ceiling |
+| Resilience | Continue, stop, or retry-once; member timeout and fallback route |
+| Limits | Maximum concurrency and a soft provider-reported team Token budget |
+| Quality | Named reviewer, repair owner, criteria, and at most two repair rounds |
+
+![The primary path remains usable on a narrow viewport](assets/v0.5-narrow.png)
+
+## Host configuration
+
+The Web bundle inserts one unique Host row; it relies on the Web profile's existing storage,
+Connection RPC, models, sessions, and browser module services.
 
 ```yaml
 - id: agent-team-gui
@@ -277,221 +239,153 @@ The bundle inserts this host row:
     defaultProvider: spawn
     defaultExecutionMode: serial
     defaultContextMode: spawn
+    historyMaxRuns: 0
+    historyMaxAgeDays: 0
+    versionMaxPerSquad: 0
 ```
 
-| Field | Type | Default | Meaning |
-|---|---|---|---|
-| `defaultProvider` | `string` | `spawn` | Registered dsh subagent provider used unless dispatch/context selection chooses another one. |
-| `defaultExecutionMode` | `serial \| parallel` | `serial` | Default member scheduling. |
-| `defaultContextMode` | `spawn \| fork \| chain` | `spawn` | `spawn` starts fresh children; `fork` includes the parent's completed-turn prefix; `chain` passes each serial member's text to the next. |
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `defaultProvider` | `spawn` | Registered DSH subagent provider |
+| `defaultExecutionMode` | `serial` | Effective mode when a team omits it |
+| `defaultContextMode` | `spawn` | Effective context when a team omits it |
+| `historyMaxRuns` | `0` | Count retention; `0` disables automatic run deletion |
+| `historyMaxAgeDays` | `0` | Age retention in days; `0` disables automatic run deletion |
+| `versionMaxPerSquad` | `0` | Version retention per team; `0` disables automatic version deletion |
 
-To override it for one profile, edit `$DSH_HOME/profiles/<name>/cordis.patch.yml`:
+If you override the row in a profile patch, restate every needed field: DSH patch rows replace the
+complete `config` object rather than deep-merging it. `chain` is valid only for serial execution.
+Retention is deliberately opt-in: upgrading to v0.5 does not silently delete existing run history
+or team versions. Set a positive limit only when automatic cleanup is the behavior you want.
 
-```yaml
-- id: agent-team-gui
-  config:
-    defaultProvider: fork
-    defaultExecutionMode: parallel
-    defaultContextMode: fork
+## Other installation paths
+
+### Exact commit
+
+Resolve and review a full commit SHA, then use the same `allowBuilds` rule as the tagged Git install:
+
+```sh
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#<full-commit-sha>
 ```
 
-dsh patch rows replace the complete `config` object; they are not deep-merged. Restate every field
-you need whenever overriding the row. `chain` is valid only with serial execution.
+This is the most reproducible source install. The release CI performs the same fresh-profile check
+against the exact pushed revision.
 
-Agent records contain:
+### Local checkout
 
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | yes | Display name. |
-| `systemPrompt` | yes | Role/persona passed to the child agent. |
-| `provider` | yes | Existing dsh provider route name. |
-| `model` | yes | Existing model id for that provider. |
-| `maxTokens` | no | Per-agent token cap. |
-| `toolScope.allow` / `toolScope.deny` | no | dsh tool-name restrictions applied to that child. |
+From this repository:
 
-Squad records contain:
-
-| Field | Required | Meaning |
-|---|---|---|
-| `name` | yes | Global display name used by Settings and conversation selectors. |
-| `members` | yes | Unique agent IDs available to the squad. |
-| `collabNote` | no | Collaboration guidance included in member prompts. |
-| `executionOrder` | no | Fixed complete ordering of every member. Omit it for Main Agent dynamic planning. |
-| `executionMode` | no | Squad default: `serial` or `parallel`; falls back to plugin config. |
-| `contextMode` | no | Squad default: `spawn`, `fork`, or serial-only `chain`; falls back to plugin config. |
-
-Squad records contain `name`, an optional collaboration note, a member list, optional
-`executionOrder`, and optional `executionMode`/`contextMode` defaults. An agent may appear in
-multiple squads. **Settings → Teams** edits these global records through a loopback-only host RPC.
-A fixed `executionOrder` must contain every member exactly once. With no fixed order, normal
-conversation sends use the parent Agent's provider/model route to plan one assignment per member and
-a complete `memberOrder`. The plugin stores route
-names only; it does not store or copy provider secrets.
-
-### In-process service API
-
-Plugin authors can also use the same registry in-process:
-
-```ts
-const agentId = await ctx.agentTeamGui.createAgent({
-  name: 'Reviewer',
-  systemPrompt: 'Review for correctness and cite concrete evidence.',
-  provider: 'your-configured-provider',
-  model: 'your-configured-model',
-  toolScope: { allow: ['bash', 'str_replace_editor'] },
-})
-
-const squad = await ctx.agentTeamGui.createSquad({
-  name: 'Release review',
-  collabNote: 'Run independent checks, then consolidate findings.',
-  members: [agentId],
-})
+```sh
+pnpm install --frozen-lockfile
+pnpm run preflight
+dsh plugin --profile web add -w .
 ```
 
-The service also exposes get/list/update/delete methods for both record types,
-`addMemberToSquad`, `removeMemberFromSquad`, `exportDefinitions`/`importDefinitions`, and a
-programmatic `dispatch` method. Exact TypeScript signatures are exported by the package
-declarations.
+`preflight` type-checks Host, Client, and tests; runs Host/rendered Client suites; builds from a clean
+output directory; audits the tarball and secrets; and boots an isolated temporary DSH Web profile.
 
-## Usage examples
+### Compiled tarball
 
-### Natural-language dispatch (available after a squad exists)
-
-```text
-User: Give the release-review squad this task: inspect the patch for regressions.
-      Have the reviewer check correctness and the test agent run focused tests in parallel.
-
-Assistant: [calls dispatch_to_squad with squadId, task,
-            assignments=[...], executionMode="parallel", contextMode="spawn"]
-
-Assistant: The squad completed with two member results. The reviewer found ..., and the focused
-           tests .... Any failed member is listed explicitly instead of being omitted.
+```sh
+mkdir -p dist
+pnpm pack --pack-destination dist
+dsh plugin --profile web add -w ./dist/dsh-agent-team-gui-0.5.0.tgz
 ```
 
-The model selects `dispatch_to_squad`; the plugin does not parse the user's text with regular
-expressions. `squadId` accepts either the durable ID or an exact squad name (case-insensitive); if
-names are duplicated, use the durable ID. Tool arguments are `squadId`, `task`, optional
-`assignments: [{ agentId, task }]`, optional `executionMode`, and optional `contextMode`.
-`memberOrder` is also optional when the squad has no fixed `executionOrder`; when supplied, it must
-be a complete, duplicate-free ordering of all squad members. A fixed squad order cannot be
-overridden per call. The tool renders the complete canonical JSON result—including each member's
-`runId`, `childId`, status, error, stop reason, and output—so the lead model can produce the final
-summary.
+The package audit verifies runtime/declaration closure, examples, governance files, screenshots,
+source maps, external dependency declarations, no absolute paths, no symlinks, and no known
+credential patterns.
 
-### Conversation collaboration toggle
+### Ask a terminal-capable Agent
 
-1. Start `dsh --profile web` and open **Settings → Teams**.
-2. Create the agents. Choose each primary and optional fallback provider/model from routes already
-   configured in dsh; optionally set max tokens and visual tool permissions. Or start from one of
-   the development, review, and product templates.
-3. Create a global squad, select its members, and optionally pin a fixed member order. Without a
-   fixed order, the Main Agent automatically generates assignments and order for each request. The
-   optional fallback planning lead is only for manual-dispatch paths. Configure
-   serial/parallel context, retry/stop behavior, timeout, concurrency, and a soft token budget.
-4. Open any conversation, select **Release review** in its squad selector, and enable squad
-   collaboration.
-5. Type the task in the normal composer and select **Send**. Disable the toggle to return that
-   conversation to ordinary single-agent sends.
+You can send this single instruction inside DeepSeek Harness:
 
-```text
-User types: Inspect this change and prepare a release recommendation.
-Conversation control: Release review squad -> Collaboration on
-User selects: Send
+> Follow the installation and security notes in
+> https://github.com/toolclub/dsh-agent-team-gui. Install the reviewed v0.5.0 tag into the Web
+> profile, authorize only `dsh-agent-team-gui` if pnpm asks for `allowBuilds`, restart Web, verify the
+> composed configuration, and report the exact installed revision.
 
-Assistant: [the selected squad collaborates using the current conversation as parent]
-Assistant: The release-review squad recommends ... Reviewer: ... Test agent: ...
+## Model tool and public service
+
+`dispatch_to_squad` remains available for explicit/manual model-driven use. It accepts a team ID or
+unique case-insensitive name, a task, optional assignments/order, and execution/context overrides
+where the saved team permits them. Its model-facing result is bounded; the complete canonical run is
+durable and available through the Run Center/export.
+
+The package also exports `AgentTeamService`, record/result types, Zod schemas, and the in-process
+definition/dispatch/version/recipe/run APIs. Treat those APIs as developer-preview surfaces while
+DSH itself is pre-stable.
+
+## Security and privacy
+
+- The dedicated RPC channel is registered loopback-only and validates every payload/result. This is
+  not an authentication layer for exposing DSH Web to the public Internet.
+- Provider credentials are never copied into plugin records, recipes, examples, logs, or exports.
+- Durable local storage does contain team role prompts, selected route names, conversation/project
+  identifiers, user tasks, run outputs, errors, and Token usage. Protect the DSH home directory.
+- Use least-privilege member tools. A model may perform any action that its allowed DSH tools permit.
+- URL recipe fetching is disabled. Installation scripts are the only extra machine-code authority;
+  review and pin Git dependencies or use a compiled tarball.
+- Report vulnerabilities privately using [SECURITY.md](SECURITY.md), not a public issue containing
+  credentials or private prompts.
+
+## Compatibility and limitations
+
+- Web profile only; there is no headless Settings UI. The exported Host service can still be used by
+  another in-process plugin that supplies the required services.
+- Declared compatibility is DSH `>=0.1.0-rc.5 <0.2.0`; CI currently verifies rc.6. DSH and this
+  plugin are both pre-stable, so pin versions.
+- Old v0.4 durable definitions and v1 exports remain readable/importable. Editing them must satisfy
+  the safer v0.5 new-write limits. A legacy run without a stored plan cannot be faithfully retried
+  and is rejected with an explanation.
+- Provider Token projections are optional. Partial/unavailable coverage is expected and explicit.
+- A soft team Token budget prevents later scheduling; it cannot stop an already-running provider at
+  the exact threshold. Per-member `maxTokens` is the hard provider bound.
+- DSH currently offers no supported registration seam for custom durable `squad/*` Session event
+  types. The plugin uses its durable run store, standard child sessions/tool events, Jobs, and logs.
+- Model-tool trigger mode is best-effort because DSH exposes no `toolChoice` control. Guaranteed
+  normal-send mode is Host-driven and durable-message-idempotent.
+
+## Verification and project health
+
+```sh
+pnpm run typecheck
+pnpm run test
+pnpm run build
+pnpm run audit:pack
+pnpm run smoke:install
+pnpm run smoke:browser
 ```
 
-The selected squad is conversation-scoped and durable. The star beside the selector optionally
-makes it the default for every conversation rooted in the same project directory; a conversation
-can still opt out. Global definitions, modes, revisions, and run history survive restart. Deleting a
-selected squad cleans affected session and project defaults. Sending needs no second task box or
-Dispatch button. In default Guaranteed mode, the host runs the team during dsh's official
-`agent/pre-step` waterfall and appends the canonical squad result before the lead model generates
-the normal assistant response. If orchestration itself fails, the lead model is still allowed to
-answer and receives a visible failure notice.
+CI runs Node 22.19 and Node 24, a fresh DSH rc.6 Web profile, browser keyboard/accessibility/reconnect
+journeys, exact Git revision installation, and the community plugin doctor. The detailed product
+contract and evidence matrix live in [docs/v0.5-product-spec.md](docs/v0.5-product-spec.md) and
+[docs/v0.5-acceptance.md](docs/v0.5-acceptance.md).
 
-### Export and import definitions
+## Contributing
 
-**Settings → Teams** can dump and restore the durable definitions as a JSON document.
+Read [CONTRIBUTING.md](CONTRIBUTING.md), the [Code of Conduct](CODE_OF_CONDUCT.md), and
+[SECURITY.md](SECURITY.md). The concise Chinese tutorial
+[从零开发一个 DeepSeek Harness 插件](docs/developing-a-deepseek-harness-plugin.zh-CN.md) explains
+`apply`, Service plugins, profile/bundle wiring, local verification, and GitHub installation using
+official Harness references.
 
-- **Export** downloads `agent-team-gui-<date>.json` containing `{ "format":
-  "agent-team-gui/definitions", "version": 1, "agents": [...], "squads": [...] }` — every record with
-  its durable id, plus model routes (never API keys).
-- **Import** first previews agent/team counts and lets the user choose **merge** or **replace**.
-  Merge upserts document rows by
-  id, keeps existing rows the document does not mention, and lets a squad
-  reference an agent that already exists in the store. The whole document is validated first — shape,
-  duplicate ids, model routes, and squad member references — so a rejected import writes nothing.
-  (The durable writes themselves are not a single transaction: a storage failure mid-import can leave
-  a partial apply.)
+Issues should include the exact DSH/plugin versions and a sanitized minimal reproduction. Pull
+requests should add focused regression evidence and keep compatibility, bounded execution,
+accessibility, privacy, and package closure in scope.
 
-The same operations are available in-process as `exportDefinitions()` and
-`importDefinitions(document, mode)`; `mode` is `merge` (default) or `replace`. `replace` makes the
-document the entire store, and then a squad may only reference agents present in the document.
-
-## Observability and failure behavior
-
-Every execution creates a durable run record before planning starts. **Team runs** shows the plan,
-live member state, full text outputs, attempts, errors, duration, and provider-owned child/run IDs;
-active runs can be cancelled. Token totals reuse dsh's official `tokenUsage` session projection and
-keep uncached input, cache read, cache write, and output buckets separate. The plugin reports tokens
-instead of inventing currency amounts because Harness does not currently expose a stable provider
-price table. Before a provider emits its first usage sample, the UI says **Metering…** rather than
-showing a misleading zero. Squad children are lineage-gated and cannot recursively dispatch another
-squad or subagent tree. Model-tool calls also retain the complete canonical JSON in standard durable
-`tool/result` text. The host log records member lifecycle. Cordis owns listener/tool cleanup, and
-the storage domain closes when the plugin unloads.
+If this workflow helps, a [GitHub Star](https://github.com/toolclub/dsh-agent-team-gui) makes it
+easier for other DSH users to discover. Real recipes, screenshots, and honest bug reports help even
+more.
 
 ## Uninstall
-
-The general form is `dsh plugin --profile <name> remove <pkg>`. For this Web bundle:
 
 ```sh
 dsh plugin --profile web remove dsh-agent-team-gui
 ```
 
-Expected: pnpm removes the dependency and dsh removes `dsh-agent-team-gui` from the profile's bundle
-list. Durable records under the dsh storage backend are not automatically deleted.
-
-## Known limitations
-
-- Web profile only; the bundle depends on dsh Web's storage, Connection RPC, and browser module
-  services and does not support a headless or bare custom profile.
-- There is no separate shell CLI/YAML record editor; use Settings or the in-process service API.
-- No custom `squad/*` session event types: the current out-of-tree API cannot register them in
-  dsh's known-event catalog. Observability relies on standard tool events, child sessions, and host
-  logs.
-- The storage domain is version 0. v0.4 adds tables compatibly, but future developer-preview
-  releases may still require explicit migrations.
-- Routes are validated on save/import and can be rechecked from Settings. A route removed later is
-  recorded as an explicit member failure; retry-once can use that member's fallback route.
-- Default Guaranteed mode is host-driven. The optional **Model tool** trigger remains best-effort
-  because Harness exposes no `toolChoice` control.
-- The token budget is a soft boundary: a member already running cannot be stopped at the exact token
-  threshold; it prevents later members/batches from starting.
-- Token cost is reported in tokens, not money, until Harness exposes stable per-provider pricing.
-- dsh APIs are pre-stable, so compatibility is intentionally bounded to `>=0.1.0-rc.5 <0.2.0`.
-
-## Roadmap
-
-- Schema migrations once the upstream storage contract stabilizes.
-- Optional provider price adapters if Harness publishes a canonical pricing interface.
-- Shareable community template packs and aggregated project-level run analytics.
-
-## Contributing
-
-The concise Chinese walkthrough [从零开发一个 DeepSeek Harness 插件](docs/developing-a-deepseek-harness-plugin.zh-CN.md)
-explains `apply`, class-based Service plugins, profile/bundle wiring, local verification, and GitHub
-installation with links to the official Harness documentation. Release details are in the
-[changelog](CHANGELOG.md).
-
-1. Open an issue describing the behavior and dsh version.
-2. Install dependencies with `pnpm install` and build with `pnpm run build`.
-3. Add focused tests and run `pnpm test`, `pnpm run typecheck`, and `pnpm pack` as applicable.
-4. Keep RPC loopback-scoped, never store API keys, and use only dsh APIs verified in the matching
-   source version.
-5. Submit a focused pull request with an English commit message.
+Removing the package does not automatically delete durable plugin tables in the configured DSH
+storage backend.
 
 ## License
 
