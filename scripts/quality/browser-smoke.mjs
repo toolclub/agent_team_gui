@@ -103,12 +103,20 @@ try {
   context = await browser.newContext({ viewport: { width: 1440, height: 900 }, reducedMotion: 'reduce' })
   page = await context.newPage()
   const runtimeErrors = []
+  const failedResponses = []
   let intentionalRestart = false
   page.on('pageerror', error => runtimeErrors.push(`pageerror: ${error.message}`))
+  page.on('response', response => {
+    if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`)
+  })
   page.on('console', message => {
     const expectedTransportClose = intentionalRestart
       && /WebSocket connection|ERR_CONNECTION_REFUSED|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(message.text())
-    if (message.type() === 'error' && !expectedTransportClose) runtimeErrors.push(`console: ${message.text()}`)
+    if (message.type() === 'error' && !expectedTransportClose) {
+      const location = message.location()
+      const source = location.url === '' ? '' : ` @ ${location.url}:${location.lineNumber ?? 0}:${location.columnNumber ?? 0}`
+      runtimeErrors.push(`console: ${message.text()}${source}`)
+    }
   })
   const modeRequest = page.waitForRequest(
     request => request.url().includes('/agent-team-gui/mode/get') && request.method() === 'POST',
@@ -517,7 +525,11 @@ try {
     await mkdir(directory, { recursive: true })
     await page.screenshot({ path: resolve(directory, 'browser-smoke-narrow.png'), fullPage: true })
   }
-  invariant(runtimeErrors.length === 0, `browser emitted runtime errors:\n${runtimeErrors.join('\n')}`)
+  invariant(runtimeErrors.length === 0, [
+    'browser emitted runtime errors:',
+    ...runtimeErrors,
+    ...(failedResponses.length === 0 ? [] : ['HTTP failures observed:', ...failedResponses]),
+  ].join('\n'))
   process.stdout.write(`Browser smoke passed at ${fixture.baseUrl} (cold/one-shot/project modes, Host restart, Settings, retry/cancel, insights, light/dark axe, keyboard, and 390px layout).\n`)
   failed = false
 } finally {
