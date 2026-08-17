@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import AxeBuilder from '@axe-core/playwright'
 import { chromium } from 'playwright'
 import { DshWebFixture } from './dsh-fixture.mjs'
-import { invariant } from './common.mjs'
+import { invariant, isExpectedRestartHostDescribe404 } from './common.mjs'
 
 async function assertNoSeriousAccessibilityViolations(page, selector, label) {
   const report = await new AxeBuilder({ page }).include(selector).analyze()
@@ -110,10 +110,16 @@ try {
     if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`)
   })
   page.on('console', message => {
+    const location = message.location()
     const expectedTransportClose = intentionalRestart
       && /WebSocket connection|ERR_CONNECTION_REFUSED|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(message.text())
-    if (message.type() === 'error' && !expectedTransportClose) {
-      const location = message.location()
+    const expectedHostDescribe404 = isExpectedRestartHostDescribe404({
+      intentionalRestart,
+      baseUrl: fixture.baseUrl,
+      sourceUrl: location.url,
+      message: message.text(),
+    })
+    if (message.type() === 'error' && !expectedTransportClose && !expectedHostDescribe404) {
       const source = location.url === '' ? '' : ` @ ${location.url}:${location.lineNumber ?? 0}:${location.columnNumber ?? 0}`
       runtimeErrors.push(`console: ${message.text()}${source}`)
     }
@@ -240,6 +246,7 @@ try {
   )
   await fixture.start()
   invariant((await reconnectSnapshot).ok(), 'browser did not refresh the team catalog after Host restart')
+  intentionalRestart = false
   await trigger.filter({ hasText: /Inherited|继承/ }).waitFor({ state: 'visible', timeout: 15_000 })
   invariant(await trigger.isEnabled(), 'team composer remained disabled after live Host restart')
   const recoveredRun = await fixture.rpc('run/get', { id: seededRunId })
@@ -247,7 +254,6 @@ try {
   invariant(recoveredRun.run?.members?.[0]?.status === 'interrupted', 'browser restart fixture left its active member running')
   const consumedMode = await fixture.rpc('mode/get', { sessionId })
   invariant(consumedMode.nextOverride === null, 'consumed one-shot mode reappeared after Host restart')
-  intentionalRestart = false
   const enabledCount = await page.locator([
     '[data-testid="agent-team-composer"] button:not([disabled])',
     '[data-testid="agent-team-composer"] select:not([disabled])',

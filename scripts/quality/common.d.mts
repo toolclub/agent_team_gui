@@ -5,6 +5,12 @@ export function invariant(condition: unknown, message: string): asserts conditio
 export function envFlag(name: string, fallback?: boolean): boolean
 export function positiveInteger(value: string | undefined, label: string, fallback: number): number
 export function parseAgentTeamGitSpec(spec: string): string
+export function isExpectedRestartHostDescribe404(input: {
+  intentionalRestart: boolean
+  baseUrl: string
+  sourceUrl: string
+  message: string
+}): boolean
 export function resolveRepositoryReleaseTarball(value: string): Promise<string>
 export function sanitizedEnvironment(source?: NodeJS.ProcessEnv | Record<string, string | undefined>): Record<string, string | undefined>
 export function createHermeticEnvironment(workspace: TemporaryWorkspace, source?: NodeJS.ProcessEnv | Record<string, string | undefined>): Promise<{

@@ -4,6 +4,7 @@ import {
   CommandRunner,
   TemporaryWorkspace,
   createHermeticEnvironment,
+  isExpectedRestartHostDescribe404,
   parseAgentTeamGitSpec,
   positiveInteger,
   resolveRepositoryReleaseTarball,
@@ -49,6 +50,26 @@ describe('quality script safety helpers', () => {
     expect(() => parseAgentTeamGitSpec('github:toolclub/dsh-agent-team-gui#v0.5.0-rc.1')).toThrow(/40-character/)
     expect(() => parseAgentTeamGitSpec('github:toolclub/dsh-agent-team-gui#main')).toThrow(/40-character/)
     expect(() => parseAgentTeamGitSpec(`github:someone-else/dsh-agent-team-gui#${revision}`)).toThrow(/40-character/)
+  })
+
+  it('ignores only the exact same-origin Host describe 404 during an intentional restart', () => {
+    const exact = {
+      intentionalRestart: true,
+      baseUrl: 'http://127.0.0.1:48123',
+      sourceUrl: 'http://127.0.0.1:48123/api/host.describe',
+      message: 'Failed to load resource: the server responded with a status of 404 (Not Found)',
+    }
+    expect(isExpectedRestartHostDescribe404(exact)).toBe(true)
+    expect(isExpectedRestartHostDescribe404({ ...exact, intentionalRestart: false })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'http://127.0.0.1:48124/api/host.describe' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'https://127.0.0.1:48123/api/host.describe' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'http://example.test/api/host.describe' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'http://127.0.0.1:48123/api/host.describe?retry=1' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'http://127.0.0.1:48123/api/host.describe#retry' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'http://127.0.0.1:48123/api/host.describe/extra' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, sourceUrl: 'not a URL' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, message: 'Failed to load resource: the server responded with a status of 500 (Internal Server Error)' })).toBe(false)
+    expect(isExpectedRestartHostDescribe404({ ...exact, message: `${exact.message} extra` })).toBe(false)
   })
 
   it('rejects release-artifact overrides outside the repository dist directory', async () => {

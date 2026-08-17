@@ -32,6 +32,28 @@ export function parseAgentTeamGitSpec(spec) {
   return match[1]
 }
 
+const RESTART_HOST_DESCRIBE_404 = 'Failed to load resource: the server responded with a status of 404 (Not Found)'
+
+/** Match only the official Host probe that can race an intentional restart. */
+export function isExpectedRestartHostDescribe404({ intentionalRestart, baseUrl, sourceUrl, message }) {
+  if (!intentionalRestart || message !== RESTART_HOST_DESCRIBE_404) return false
+  try {
+    const base = new URL(baseUrl)
+    const source = new URL(sourceUrl)
+    const expected = `${base.origin}/api/host.describe`
+    return (base.protocol === 'http:' || base.protocol === 'https:')
+      && source.origin === base.origin
+      && source.pathname === '/api/host.describe'
+      && source.search === ''
+      && source.hash === ''
+      && source.username === ''
+      && source.password === ''
+      && source.href === expected
+  } catch {
+    return false
+  }
+}
+
 /** Retain only ordinary presentation/process settings, never ambient credential or tool-control state. */
 export function sanitizedEnvironment(source = process.env) {
   const safe = {}
