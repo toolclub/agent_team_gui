@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AGENT_TEAM_RPC_API_VERSION,
   AgentTeamController,
+  EMPTY_DATA,
   isAuthoritativeModeResponse,
   refreshAgentTeamsOnReconnect,
   type TeamSnapshot,
@@ -13,6 +14,8 @@ const emptySnapshot = (apiVersion = AGENT_TEAM_RPC_API_VERSION): TeamSnapshot =>
   squads: [],
   models: [],
   tools: [],
+  capabilities: { smartActivation: true, dags: true, qualityGate: true, backgroundRuns: true, recipes: true, remoteRecipeFetch: false, insights: true, reproducibleVersions: true },
+  defaults: { executionMode: 'serial', fixedOrderExecutionMode: 'serial', contextMode: 'fork', planningContext: 'full', plannerMaxTokens: 2_048 },
 })
 
 describe('AgentTeamController RPC compatibility', () => {
@@ -26,10 +29,10 @@ describe('AgentTeamController RPC compatibility', () => {
   it('rejects a stale host before enabling unsupported controls', async () => {
     const controller = new AgentTeamController(async <T,>() => emptySnapshot(0) as T)
 
-    await expect(controller.load()).rejects.toThrow(/Restart DeepSeek Harness/)
+    await expect(controller.load()).rejects.toThrow(/DeepSeek Harness/)
     expect(controller.getSnapshot()).toMatchObject({
       status: 'error',
-      data: emptySnapshot(),
+      data: EMPTY_DATA,
     })
   })
 
@@ -102,7 +105,7 @@ describe('AgentTeamController RPC compatibility', () => {
       sessionReady: false,
     })).toBe(false)
     expect(isAuthoritativeModeResponse({
-      mode: { squadId: 'saved' },
+      mode: { sessionId: 'session-1', squadId: 'saved', squadName: 'Saved team' },
       sessionOverride: 'enabled',
       sessionReady: false,
     })).toBe(true)

@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-team-gui",
-  "version": "0.4.1",
-  "description": "Persistent multi-model squads for DeepSeek Harness with guaranteed orchestration, live runs, and token cost monitoring",
+  "version": "0.5.0",
+  "description": "Persistent multi-model squads for DeepSeek Harness with durable orchestration, DAG workflows, run history, and provider-reported token usage",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -20,11 +20,18 @@
     "lib/index.js",
     "lib/client.js",
     "lib/client.js.map",
+    "lib/types/index.d.ts",
+    "lib/types/client/index.d.ts",
     "lib/types/**/*.d.ts",
+    "lib/types/**/*.d.ts.map",
     "cordis.patch.yml",
-    "assets/*.jpg",
+    "assets/*.png",
+    "examples/**/*.json",
     "docs/**/*.md",
     "CHANGELOG.md",
+    "CODE_OF_CONDUCT.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
     "README-zh.md"
   ],
   "dsh": {
@@ -35,6 +42,7 @@
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-connection",
+        "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-client-runtime",
         "@deepseek-ai/dsh-client-ui-conversation",
         "@deepseek-ai/dsh-client-ui-settings"
@@ -44,9 +52,12 @@
   "keywords": [
     "dsh",
     "dsh-plugin",
+    "dsh-plugins",
     "deepseek-harness",
+    "deepseek-harness-plugin",
     "agent",
     "multi-agent",
+    "multi-model",
     "orchestration",
     "token-usage",
     "agent-team"
@@ -62,16 +73,26 @@
     "url": "https://github.com/toolclub/dsh-agent-team-gui/issues"
   },
   "engines": {
-    "node": ">=22.19"
+    "node": "^22.19.0 || >=24.0.0"
   },
+  "packageManager": "pnpm@9.15.4",
   "scripts": {
-    "build": "tsdown --config tsdown.config.ts && tsc -p tsconfig.host.json --pretty false && tsc -p tsconfig.client.json --pretty false",
-    "prepare": "tsdown --config tsdown.config.ts",
+    "build": "node scripts/quality/clean-build.mjs && tsdown --config tsdown.config.ts && tsc -p tsconfig.host.json --pretty false && tsc -p tsconfig.client.json --pretty false",
+    "check:whitespace": "node scripts/quality/git-whitespace.mjs",
+    "prepare": "pnpm run build",
     "prepack": "pnpm run build",
-    "typecheck": "tsc -p tsconfig.host.json --noEmit --pretty false && tsc -p tsconfig.client.json --noEmit --pretty false && tsc -p tsconfig.test.json --pretty false",
+    "typecheck": "tsc -p tsconfig.host.json --noEmit --pretty false && tsc -p tsconfig.client.json --noEmit --pretty false && tsc -p tsconfig.test.json --pretty false && tsc -p tsconfig.client-test.json --pretty false",
     "typecheck:host": "tsc -p tsconfig.host.json --noEmit --pretty false && tsc -p tsconfig.test.json --pretty false",
-    "test": "vitest run --config vitest.host.config.ts",
-    "test:host": "vitest run --config vitest.host.config.ts"
+    "typecheck:client": "tsc -p tsconfig.client.json --noEmit --pretty false && tsc -p tsconfig.client-test.json --pretty false",
+    "test": "pnpm run test:host && pnpm run test:client",
+    "test:host": "vitest run --config vitest.host.config.ts",
+    "test:client": "vitest run --config vitest.client.config.ts",
+    "audit:pack": "node scripts/quality/pack-audit.mjs",
+    "smoke:install": "node scripts/quality/dsh-smoke.mjs",
+    "smoke:browser": "node scripts/quality/browser-smoke.mjs",
+    "capture:readme": "node scripts/quality/capture-readme.mjs",
+    "quality:doctor": "node scripts/quality/doctor.mjs",
+    "preflight": "node scripts/quality/release-preflight.mjs"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -83,10 +104,13 @@
     "@deepseek-ai/dsh-agent": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-brand": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-client-connection": ">=0.1.0-rc.5 <0.2.0",
+    "@deepseek-ai/dsh-client-locale": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-client-runtime": ">=0.1.0-rc.5 <0.2.0",
+    "@deepseek-ai/dsh-client-ui-slots": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-client-ui-conversation": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-client-ui-settings": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-host-apiproxy": ">=0.1.0-rc.5 <0.2.0",
+    "@deepseek-ai/dsh-jobs": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-llm": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-session": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-storage": ">=0.1.0-rc.5 <0.2.0",
@@ -95,16 +119,24 @@
     "@deepseek-ai/dsh-system-prompt": ">=0.1.0-rc.5 <0.2.0",
     "@deepseek-ai/dsh-tools": ">=0.1.0-rc.5 <0.2.0"
   },
+  "peerDependenciesMeta": {
+    "@deepseek-ai/dsh-jobs": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@deepseek-ai/cordis": "^4.0.1",
     "@deepseek-ai/schemastery": "^3.18.1",
     "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-brand": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-connection": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-locale": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-runtime": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-conversation": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-client-ui-settings": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-host-apiproxy": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-jobs": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-llm": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-session": "^0.1.0-rc.6",
     "@deepseek-ai/dsh-storage": "^0.1.0-rc.6",
@@ -114,6 +146,15 @@
     "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
     "@types/node": "^24.0.0",
     "@types/react": "~18.3.1",
+    "@types/react-dom": "~18.3.1",
+    "@axe-core/playwright": "^4.10.2",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "dsh-plugin-doctor": "0.1.0",
+    "happy-dom": "^20.11.2",
+    "playwright": "^1.62.1",
+    "react-dom": "^18.2.0",
     "tsdown": "^0.22.14",
     "typescript": "^5.9.3",
     "vitest": "^4.1.10"

@@ -31,7 +31,11 @@ pnpm-debug.log*
 # Test / coverage
 coverage/
 .nyc_output/
+.artifacts/
 
 # Cordis / dsh local profile artifacts (never ship these)
 .cordis/
 *.local.yml
+
+# Developer-local process helper; contains machine-specific paths/PIDs.
+restart-web.sh

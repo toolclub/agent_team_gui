@@ -1,0 +1,140 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  quality:
+    name: Node ${{ matrix.node }} quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22.19.0, 24.x]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run check:whitespace
+        env:
+          QUALITY_DIFF_BASE: ${{ github.event.before }}
+      - run: pnpm run typecheck
+      - run: pnpm run test
+      - run: pnpm run build
+      - run: pnpm run audit:pack
+
+  hermetic-web-smoke:
+    name: Fresh Web profile and browser smoke
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run smoke:install
+        env:
+          API_VERSION: 3
+      - run: pnpm run smoke:browser
+        env:
+          API_VERSION: 3
+          SMOKE_SCREENSHOT_DIR: .artifacts/browser-smoke
+      - name: Upload isolated diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: hermetic-diagnostics-${{ github.sha }}
+          path: /tmp/dsh-agent-team-gui-*
+          if-no-files-found: ignore
+          retention-days: 7
+      - name: Upload browser evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: browser-smoke-${{ github.sha }}
+          path: .artifacts/browser-smoke
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
+
+  exact-github-revision:
+    name: Install exact pushed GitHub revision
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+      - run: npm install --global @deepseek-ai/dsh@0.1.0-rc.6
+      - run: pnpm run smoke:install
+        env:
+          API_VERSION: 3
+          PLUGIN_SPEC: github:toolclub/dsh-agent-team-gui#${{ github.sha }}
+      - name: Upload exact-install diagnostics on failure
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: exact-install-diagnostics-${{ github.sha }}
+          path: /tmp/dsh-agent-team-gui-*
+          if-no-files-found: ignore
+          retention-days: 7
+
+  supplemental-doctor:
+    name: Community plugin doctor
+    needs: quality
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        with:
+          version: 9.15.4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22.19.0
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm run build
+      - run: pnpm run quality:doctor
+        env:
+          RUN_SUPPLEMENTAL_DOCTOR: 1

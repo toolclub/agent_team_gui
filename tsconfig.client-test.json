@@ -1,0 +1,19 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "declaration": false,
+    "declarationMap": false,
+    "noEmit": true,
+    "rootDir": ".",
+    "tsBuildInfoFile": "lib/tsconfig.client-test.tsbuildinfo",
+    "types": ["node", "vitest/globals", "@testing-library/jest-dom"]
+  },
+  "include": [
+    "src/client/**/*.ts",
+    "src/client/**/*.tsx",
+    "tests/**/*.client.spec.ts",
+    "tests/**/*.client.spec.tsx",
+    "tests/smoke/client-setup.ts",
+    "vitest.client.config.ts"
+  ]
+}

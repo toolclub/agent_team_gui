@@ -1,0 +1,31 @@
+name: Feature request
+description: Propose a user-facing improvement or a safer orchestration workflow.
+title: "[Feature]: "
+labels: [enhancement, needs-triage]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Describe the workflow pain before proposing an implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should a user be able to accomplish, and how will they know it worked?
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Compatibility and safety
+      options:
+        - label: Existing saved teams and v0.4 imports should keep working unless a migration is explicitly proposed.
+        - label: The proposal does not require exposing credentials or bypassing Harness permissions.
+        - label: The proposal considers cancellation, bounded execution, and restart behaviour where relevant.

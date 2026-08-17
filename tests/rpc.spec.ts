@@ -16,6 +16,16 @@ async function call<T>(handler: Handler, endpoint: string, payload: unknown, sig
 
 interface SnapshotValue {
   apiVersion: number
+  capabilities: {
+    smartActivation: boolean
+    dags: boolean
+    qualityGate: boolean
+    backgroundRuns: boolean
+    recipes: boolean
+    insights: boolean
+    reproducibleVersions: boolean
+    remoteRecipeFetch: boolean
+  }
   agents: Array<{ id: string; name: string }>
   squads: Array<{ id: string; name: string }>
   models: Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>
@@ -32,7 +42,8 @@ describe('agent team RPC handler', () => {
     const result = await call<SnapshotValue>(handler, 'snapshot', {}, signal())
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.value.apiVersion).toBe(2)
+    expect(result.value.apiVersion).toBe(3)
+    expect(result.value.capabilities).toMatchObject({ dags: true, recipes: true, remoteRecipeFetch: false })
     expect(result.value.agents).toHaveLength(3)
     expect(result.value.squads).toHaveLength(1)
     expect(result.value.models).toEqual([{
@@ -187,14 +198,20 @@ describe('agent team RPC handler', () => {
         sessionReady: false,
         projectKey: null,
         projectDefault: null,
+        nextOverride: null,
       } })
 
     const enabled = await call<{ mode: { sessionId: string; squadId: string; squadName: string } | null }>(
       handler, 'mode/set', { sessionId: 'conversation', squadId }, signal(),
     )
-    expect(enabled).toEqual({ ok: true, value: { mode: {
-      sessionId: 'conversation', squadId, squadName: 'Delivery',
-    } } })
+    expect(enabled).toEqual({ ok: true, value: {
+      mode: { sessionId: 'conversation', squadId, squadName: 'Delivery' },
+      sessionOverride: 'enabled',
+      nextOverride: null,
+      projectKey: null,
+      projectDefault: null,
+      sessionReady: false,
+    } })
     await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
       .resolves.toEqual({ ok: true, value: {
         mode: { sessionId: 'conversation', squadId, squadName: 'Delivery' },
@@ -202,9 +219,17 @@ describe('agent team RPC handler', () => {
         sessionReady: false,
         projectKey: null,
         projectDefault: null,
+        nextOverride: null,
       } })
     await expect(call(handler, 'mode/set', { sessionId: 'conversation', squadId: null }, signal()))
-      .resolves.toEqual({ ok: true, value: { mode: null } })
+      .resolves.toEqual({ ok: true, value: {
+        mode: null,
+        sessionOverride: 'disabled',
+        sessionReady: false,
+        projectKey: null,
+        projectDefault: null,
+        nextOverride: null,
+      } })
     await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
       .resolves.toEqual({ ok: true, value: {
         mode: null,
@@ -212,6 +237,7 @@ describe('agent team RPC handler', () => {
         sessionReady: false,
         projectKey: null,
         projectDefault: null,
+        nextOverride: null,
       } })
   })
 
@@ -234,6 +260,7 @@ describe('agent team RPC handler', () => {
         sessionReady: true,
         projectKey: '/workspace/project',
         projectDefault: { projectKey: '/workspace/project', squadId, enabled: true },
+        nextOverride: null,
       },
     })
   })
@@ -247,7 +274,10 @@ describe('agent team RPC handler', () => {
 
     const target = createService()
     const targetHandler = createAgentTeamRpcHandler(target.ctx, target.service)
-    const imported = await call<AgentTeamImportResult>(targetHandler, 'import', { doc: exported.value }, signal())
+    const preview = await target.service.previewDefinitionsImport(exported.value)
+    const imported = await call<AgentTeamImportResult>(targetHandler, 'import', {
+      doc: exported.value, expectedRevision: preview.definitionRevision,
+    }, signal())
     expect(imported.ok).toBe(true)
     if (!imported.ok) return
     expect(imported.value).toEqual({ agents: 3, squads: 1 })
@@ -285,6 +315,7 @@ describe('agent team RPC handler', () => {
         sessionReady: true,
         projectKey: '/workspace/project',
         projectDefault: { projectKey: '/workspace/project', squadId, enabled: true },
+        nextOverride: null,
       },
     })
 

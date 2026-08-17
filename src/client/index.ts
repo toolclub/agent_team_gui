@@ -13,9 +13,10 @@ import {
   TeamRunDock,
   TeamSettingsPage,
 } from './AgentTeamDashboard.tsx'
+import { AGENT_TEAM_LOCALE_NS, DICTIONARIES, type LocaleService } from './i18n.ts'
 
 /** 浏览器侧依赖；模块加载器会在这些服务就绪后调用 apply。 */
-export const inject = ['slots', 'connection']
+export const inject = ['slots', 'connection', 'locale']
 
 /** agent_team_gui 使用的独立 Connection RPC channel。 */
 export const RPC_CHANNEL = '/agent-team-gui'
@@ -23,14 +24,19 @@ export const RPC_CHANNEL = '/agent-team-gui'
 /** 将管理页和会话模式控件贡献到 dsh 的既有 additive slots。 */
 export function apply(ctx: ClientContext): void {
   const connection = ctx.get('connection') as ConnectionHandle
-  const call = async <T,>(endpoint: string, payload: unknown): Promise<T> => {
-    const result = await connection.rpc.call(RPC_CHANNEL, endpoint, payload)
+  const locale = ctx.get('locale') as LocaleService
+  const call = async <T,>(endpoint: string, payload: unknown, signal?: AbortSignal): Promise<T> => {
+    const result = await connection.rpc.call(RPC_CHANNEL, endpoint, payload, signal)
     if (!result.ok) {
       throw new Error(`${result.error.code}: ${result.error.message}`)
     }
     return result.value as T
   }
-  const controller = new AgentTeamController(call)
+  ctx.effect(
+    () => locale.register(AGENT_TEAM_LOCALE_NS, DICTIONARIES),
+    'agent-team-gui: bilingual locale dictionary',
+  )
+  const controller = new AgentTeamController(call, locale)
 
   // A browser tab survives `dsh` restarts. Re-read the durable catalog when
   // the Connection handshake returns; otherwise one early failed snapshot
@@ -52,7 +58,7 @@ export function apply(ctx: ClientContext): void {
     name: 'settings.section',
     id: 'agent-teams',
     order: 25,
-    label: () => localeIsZh() ? '小队' : 'Teams',
+    label: () => controller.i18n.t('teams'),
     inject: () => ({ controller }),
   }, TeamSettingsPage))
 
@@ -74,11 +80,7 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.view',
     id: 'agent-team-runs',
     order: 20,
-    label: () => localeIsZh() ? '小队运行' : 'Team runs',
+    label: () => controller.i18n.t('runs'),
     inject: () => ({ controller }),
   }, TeamRunCenter))
-}
-
-function localeIsZh(): boolean {
-  return typeof navigator !== 'undefined' && navigator.language.toLowerCase().startsWith('zh')
 }
