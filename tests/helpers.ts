@@ -8,8 +8,8 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import type { SubagentRuntime, SubagentStartRequest } from '@deepseek-ai/dsh-subagent'
 import { vi } from 'vitest'
 import AgentTeamService from '../src/index.ts'
-import { AgentId, SquadId } from '../src/types.ts'
-import type { AgentRecord, SessionSquadModeRecord, SquadRecord } from '../src/types.ts'
+import { AgentId, DispatchId, SquadId } from '../src/types.ts'
+import type { AgentRecord, ProjectSquadDefaultRecord, SessionSquadModeRecord, SquadRecord, SquadRunRecord, SquadVersionRecord } from '../src/types.ts'
 
 export class MemoryTable<K extends string, V> implements KvTable<K, V> {
   private readonly values = new Map<K, V>()
@@ -72,6 +72,9 @@ export interface Fixture {
   readonly agents: MemoryTable<AgentId, AgentRecord>
   readonly squads: MemoryTable<SquadId, SquadRecord>
   readonly modes: MemoryTable<SessionId, SessionSquadModeRecord>
+  readonly runs: MemoryTable<DispatchId, SquadRunRecord>
+  readonly versions: MemoryTable<string, SquadVersionRecord>
+  readonly projectDefaults: MemoryTable<string, ProjectSquadDefaultRecord>
   readonly starts: { provider: string; request: SubagentStartRequest }[]
   readonly parent: Agent
 }
@@ -106,6 +109,7 @@ export function createService(options: FixtureOptions = {}): Fixture {
   ctx.provide('subagents', subagents)
   ctx.provide('llm', llm)
   ctx.provide('agents', { get: options.agentsGet ?? (() => undefined) })
+  ctx.provide('tools', { schemas: () => [{ name: 'read_file', description: 'Read a workspace file' }] })
   const service = new AgentTeamService(ctx, {
     defaultProvider: 'spawn',
     defaultExecutionMode: 'serial',
@@ -114,9 +118,19 @@ export function createService(options: FixtureOptions = {}): Fixture {
   const agents = new MemoryTable<AgentId, AgentRecord>()
   const squads = new MemoryTable<SquadId, SquadRecord>()
   const modes = new MemoryTable<SessionId, SessionSquadModeRecord>()
-  Object.assign(service, { agentsTable: agents, squadsTable: squads, sessionModesTable: modes })
-  const parent = { id: SessionId('parent') } as unknown as Agent
-  return { ctx, service, agents, squads, modes, starts, parent }
+  const runs = new MemoryTable<DispatchId, SquadRunRecord>()
+  const versions = new MemoryTable<string, SquadVersionRecord>()
+  const projectDefaults = new MemoryTable<string, ProjectSquadDefaultRecord>()
+  Object.assign(service, {
+    agentsTable: agents,
+    squadsTable: squads,
+    sessionModesTable: modes,
+    runsTable: runs,
+    squadVersionsTable: versions,
+    projectDefaultsTable: projectDefaults,
+  })
+  const parent = { id: SessionId('parent'), session: { header: { cwd: '/workspace/project' } } } as unknown as Agent
+  return { ctx, service, agents, squads, modes, runs, versions, projectDefaults, starts, parent }
 }
 
 export async function populate(): Promise<Fixture> {

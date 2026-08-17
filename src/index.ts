@@ -3,7 +3,7 @@ import { Service } from '@deepseek-ai/cordis'
 import type { Context } from '@deepseek-ai/cordis'
 import z from '@deepseek-ai/schemastery'
 import type { Agent } from '@deepseek-ai/dsh-agent'
-import type { ContentBlock } from '@deepseek-ai/dsh-llm'
+import { createUserMessage, type ContentBlock, type UserMessage } from '@deepseek-ai/dsh-llm'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { KvTable } from '@deepseek-ai/dsh-storage-domain'
 import type { SubagentResult, SubagentRun } from '@deepseek-ai/dsh-subagent'
@@ -16,6 +16,7 @@ import {
   SquadId,
   type AgentExportItem,
   type AgentRecord,
+  type AgentTokenUsage,
   type AgentTeamExportDocument,
   type AgentTeamImportMode,
   type AgentTeamImportResult,
@@ -27,6 +28,11 @@ import {
   type SquadRecord,
   type SessionSquadModeRecord,
   type SessionSquadModeView,
+  type ProjectSquadDefaultRecord,
+  type SquadExecutionPlan,
+  type SquadRunMember,
+  type SquadRunRecord,
+  type SquadVersionRecord,
 } from './types.ts'
 
 export * from './types.ts'
@@ -75,9 +81,29 @@ interface SystemPromptService {
   }): () => void
 }
 
+interface SessionProjectionService {
+  snapshot(session: Agent['session']): { readonly values: Record<string, unknown> }
+}
+
+interface TokenUsageProjection {
+  readonly uncachedInputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+}
+
+const ZERO_USAGE: AgentTokenUsage = {
+  uncachedInputTokens: 0,
+  outputTokens: 0,
+  cacheReadTokens: 0,
+  cacheWriteTokens: 0,
+  totalTokens: 0,
+  providerReported: false,
+}
+
 /** Durable registry and orchestrator exposed as `ctx.agentTeamGui`. */
 export class AgentTeamService extends Service {
-  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents', 'systemPrompt']
+  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents', 'systemPrompt', 'sessionProjections']
 
   static Config: z<Config> = z.object({
     defaultProvider: z.string().default('spawn'),
@@ -88,6 +114,10 @@ export class AgentTeamService extends Service {
   private agentsTable?: KvTable<AgentId, AgentRecord>
   private squadsTable?: KvTable<SquadId, SquadRecord>
   private sessionModesTable?: KvTable<SessionId, SessionSquadModeRecord>
+  private runsTable?: KvTable<DispatchId, SquadRunRecord>
+  private squadVersionsTable?: KvTable<string, SquadVersionRecord>
+  private projectDefaultsTable?: KvTable<string, ProjectSquadDefaultRecord>
+  private readonly activeRunControllers = new Map<DispatchId, AbortController>()
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'agentTeamGui')
@@ -99,6 +129,9 @@ export class AgentTeamService extends Service {
     this.agentsTable = domain.table('agents')
     this.squadsTable = domain.table('squads')
     this.sessionModesTable = domain.table('session_modes')
+    this.runsTable = domain.table('runs')
+    this.squadVersionsTable = domain.table('squad_versions')
+    this.projectDefaultsTable = domain.table('project_defaults')
     this.ctx.tools.register(createDispatchToSquadTool(this))
     const systemPrompt = this.ctx.get('systemPrompt') as SystemPromptService
     systemPrompt.section({
@@ -106,8 +139,44 @@ export class AgentTeamService extends Service {
       order: 118,
       text: context => this.squadModeGuidance(context.agent),
     })
+    this.ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+      const decision = await next()
+      if (decision.kind === 'reject') return decision
+      const submitted = decision.messages.find((message): message is UserMessage => message.source.kind === 'user')
+      if (submitted === undefined) return decision
+      const mode = this.getEffectiveSessionSquadMode(agent)
+      if (mode === undefined) return decision
+      const squad = this.squads().get(mode.squadId)
+      if (squad === undefined || (squad.triggerMode ?? 'guaranteed') !== 'guaranteed') return decision
+      const task = this.messageText(submitted)
+      if (task.trim() === '') return decision
+      let result: SquadDispatchResult
+      try {
+        result = await this.dispatch({ squadId: mode.squadId, task }, agent, signal, {
+          sessionId: agent.id,
+          sourceMessageId: submitted.id,
+        })
+      } catch (error: unknown) {
+        this.ctx.logger.warn(`[agent-team-gui] guaranteed dispatch failed; allowing lead model to continue: ${this.errorText(error)}`)
+        const failure = createUserMessage({
+          content: [{ type: 'text', text: `The selected squad could not run: ${this.errorText(error)}. Continue answering the user directly and disclose the team failure briefly.` }],
+          source: { kind: 'plugin', plugin: 'dsh-agent-team-gui', form: 'notice', summary: 'Squad dispatch failed' },
+        })
+        return { kind: 'enter' as const, messages: [...decision.messages, failure] }
+      }
+      const context = createUserMessage({
+        content: [{ type: 'text', text: this.renderSquadContext(result) }],
+        source: {
+          kind: 'plugin',
+          plugin: 'dsh-agent-team-gui',
+          form: 'notice',
+          summary: `${result.squadName}: ${result.status}, ${result.usage.totalTokens} tokens`,
+        },
+      })
+      return { kind: 'enter' as const, messages: [...decision.messages, context] }
+    })
     registerAgentTeamRpc(this.ctx, this)
-    this.ctx.logger.info('[agent-team-gui] durable registry and dispatch_to_squad ready')
+    this.ctx.logger.info('[agent-team-gui] v0.4 registry, guaranteed conversation dispatch, run center and token usage ready')
   }
 
   private agents(): KvTable<AgentId, AgentRecord> {
@@ -125,9 +194,30 @@ export class AgentTeamService extends Service {
     return this.sessionModesTable
   }
 
+  private runs(): KvTable<DispatchId, SquadRunRecord> {
+    if (this.runsTable === undefined) throw new Error('agent_team_gui is not initialized')
+    return this.runsTable
+  }
+
+  private squadVersions(): KvTable<string, SquadVersionRecord> {
+    if (this.squadVersionsTable === undefined) throw new Error('agent_team_gui is not initialized')
+    return this.squadVersionsTable
+  }
+
+  private projectDefaults(): KvTable<string, ProjectSquadDefaultRecord> {
+    if (this.projectDefaultsTable === undefined) throw new Error('agent_team_gui is not initialized')
+    return this.projectDefaultsTable
+  }
+
   private async validateModelRoute(record: AgentRecord): Promise<void> {
+    if ((record.fallbackProvider === undefined) !== (record.fallbackModel === undefined)) {
+      throw new Error('fallbackProvider and fallbackModel must be configured together')
+    }
     try {
       await this.ctx.llm.resolveModelInfo(record.provider, record.model)
+      if (record.fallbackProvider !== undefined && record.fallbackModel !== undefined) {
+        await this.ctx.llm.resolveModelInfo(record.fallbackProvider, record.fallbackModel)
+      }
     } catch (error: unknown) {
       throw new Error(`invalid model route ${record.provider}/${record.model}: ${this.errorText(error)}`, { cause: error })
     }
@@ -159,13 +249,17 @@ export class AgentTeamService extends Service {
     if (this.agents().get(id) === undefined) return false
     const affected = [...this.squads().entries()].filter(([, squad]) => squad.members.includes(id))
     for (const [squadId] of affected) {
-      await this.squads().update(squadId, squad => ({
-        ...squad,
-        members: squad.members.filter(memberId => memberId !== id),
-        ...(squad.executionOrder === undefined
-          ? {}
-          : { executionOrder: squad.executionOrder.filter(memberId => memberId !== id) }),
-      }))
+      const updated = await this.squads().update(squadId, (squad) => {
+        const { leaderAgentId, ...withoutLeader } = squad
+        return {
+          ...(leaderAgentId === id ? withoutLeader : squad),
+          members: squad.members.filter(memberId => memberId !== id),
+          ...(squad.executionOrder === undefined
+            ? {}
+            : { executionOrder: squad.executionOrder.filter(memberId => memberId !== id) }),
+        }
+      })
+      await this.recordSquadVersion(squadId, updated)
     }
     return this.agents().delete(id)
   }
@@ -206,6 +300,22 @@ export class AgentTeamService extends Service {
     if (record.executionMode === 'parallel' && record.contextMode === 'chain') {
       throw new AgentTeamError('contextMode "chain" requires serial execution', 'INVALID_DISPATCH')
     }
+    if (record.leaderAgentId !== undefined && !record.members.includes(record.leaderAgentId)) {
+      throw new AgentTeamError('leaderAgentId must be one of the squad members', 'INVALID_MEMBERS')
+    }
+    if (record.executionMode === 'parallel' && record.contextMode === 'chain') {
+      throw new AgentTeamError('contextMode "chain" requires serial execution', 'INVALID_DISPATCH')
+    }
+    if (record.executionOrder !== undefined && record.executionMode === 'parallel') {
+      throw new AgentTeamError('fixed executionOrder requires serial execution', 'INVALID_DISPATCH')
+    }
+  }
+
+  private async recordSquadVersion(squadId: SquadId, record: SquadRecord): Promise<void> {
+    const versions = this.listSquadVersions(squadId)
+    const version = (versions[0]?.version ?? 0) + 1
+    const entry: SquadVersionRecord = { squadId, version, createdAt: Date.now(), record }
+    await this.squadVersions().put(`${squadId}:${String(version).padStart(8, '0')}`, entry)
   }
 
   /** Create a squad after validating every member reference. */
@@ -216,6 +326,7 @@ export class AgentTeamService extends Service {
     }
     this.validateSquadRecord(parsed)
     await this.squads().put(id, parsed)
+    await this.recordSquadVersion(id, parsed)
     return id
   }
 
@@ -227,6 +338,7 @@ export class AgentTeamService extends Service {
     const parsed = squadRecordSchema.parse(record)
     this.validateSquadRecord(parsed)
     await this.squads().put(id, parsed)
+    await this.recordSquadVersion(id, parsed)
   }
 
   /** Delete a squad and disable it in every persisted session mode. */
@@ -234,6 +346,12 @@ export class AgentTeamService extends Service {
     if (this.squads().get(id) === undefined) return false
     for (const [sessionId, mode] of this.sessionModes().entries()) {
       if (mode.squadId === id) await this.sessionModes().delete(sessionId)
+    }
+    for (const [projectKey, record] of this.projectDefaults().entries()) {
+      if (record.squadId === id) await this.projectDefaults().delete(projectKey)
+    }
+    for (const [key, version] of this.squadVersions().entries()) {
+      if (version.squadId === id) await this.squadVersions().delete(key)
     }
     return this.squads().delete(id)
   }
@@ -248,10 +366,52 @@ export class AgentTeamService extends Service {
     return [...this.squads().entries()]
   }
 
+  /** Non-mutating readiness checks used by the Settings diagnostics action. */
+  async diagnoseSquad(id: SquadId): Promise<{ ok: boolean; checks: Array<{ name: string; ok: boolean; message: string }> }> {
+    const squad = this.squads().get(id)
+    if (squad === undefined) throw new AgentTeamError(`squad "${id}" does not exist`, 'SQUAD_NOT_FOUND')
+    const checks: Array<{ name: string; ok: boolean; message: string }> = []
+    const add = (name: string, ok: boolean, message: string): void => { checks.push({ name, ok, message }) }
+    try {
+      this.validateSquadRecord(squad)
+      add('definition', true, `${squad.members.length} members; ${squad.executionMode ?? this.config.defaultExecutionMode}/${squad.contextMode ?? this.config.defaultContextMode}`)
+    } catch (error: unknown) {
+      add('definition', false, this.errorText(error))
+    }
+    for (const memberId of squad.members) {
+      const member = this.agents().get(memberId)
+      if (member === undefined) {
+        add(String(memberId), false, 'missing agent definition')
+        continue
+      }
+      try {
+        await this.validateModelRoute(member)
+        add(member.name, true, `${member.provider}/${member.model}${member.fallbackProvider === undefined ? '' : ` → ${member.fallbackProvider}/${member.fallbackModel}`}`)
+      } catch (error: unknown) {
+        add(member.name, false, this.errorText(error))
+      }
+    }
+    return { ok: checks.every(check => check.ok), checks }
+  }
+
+  /** Immutable newest-first revision history for one squad. */
+  listSquadVersions(squadId: SquadId): SquadVersionRecord[] {
+    return [...this.squadVersions().entries()].map(([, record]) => record)
+      .filter(version => version.squadId === squadId)
+      .sort((left, right) => right.version - left.version)
+  }
+
+  /** Restore a prior revision while retaining the restore itself as a new revision. */
+  async restoreSquadVersion(squadId: SquadId, version: number): Promise<void> {
+    const found = this.listSquadVersions(squadId).find(item => item.version === version)
+    if (found === undefined) throw new AgentTeamError(`squad version ${version} does not exist`, 'SQUAD_NOT_FOUND')
+    await this.updateSquad(squadId, found.record)
+  }
+
   /** Resolve the durable squad-mode selection for one Session. */
   getSessionSquadMode(sessionId: SessionId): SessionSquadModeView | undefined {
     const mode = this.sessionModes().get(sessionId)
-    if (mode === undefined) return undefined
+    if (mode === undefined || mode.disabled === true || mode.squadId === undefined) return undefined
     const squad = this.squads().get(mode.squadId)
     if (squad === undefined) return undefined
     return { sessionId, squadId: mode.squadId, squadName: squad.name }
@@ -260,7 +420,7 @@ export class AgentTeamService extends Service {
   /** Enable a squad for normal conversation, or disable it when squadId is omitted. */
   async setSessionSquadMode(sessionId: SessionId, squadId?: SquadId): Promise<SessionSquadModeView | undefined> {
     if (squadId === undefined) {
-      await this.sessionModes().delete(sessionId)
+      await this.sessionModes().put(sessionId, { disabled: true })
       return undefined
     }
     const squad = this.squads().get(squadId)
@@ -271,6 +431,41 @@ export class AgentTeamService extends Service {
     return { sessionId, squadId, squadName: squad.name }
   }
 
+  /** Workspace key used by project defaults without exposing arbitrary client paths. */
+  projectKeyFor(agent: Agent): string | undefined {
+    return agent.session.header.cwd
+  }
+
+  /** Resolve explicit session state first, then a durable workspace default. */
+  getEffectiveSessionSquadMode(agent: Agent): SessionSquadModeView | undefined {
+    const explicit = this.sessionModes().get(agent.id)
+    if (explicit !== undefined) return this.getSessionSquadMode(agent.id)
+    const projectKey = this.projectKeyFor(agent)
+    if (projectKey === undefined) return undefined
+    const project = this.projectDefaults().get(projectKey)
+    if (project === undefined || !project.enabled) return undefined
+    const squad = this.squads().get(project.squadId)
+    return squad === undefined ? undefined : { sessionId: agent.id, squadId: project.squadId, squadName: squad.name }
+  }
+
+  getProjectDefault(projectKey: string): ProjectSquadDefaultRecord | undefined {
+    return this.projectDefaults().get(projectKey)
+  }
+
+  async setProjectDefault(projectKey: string, squadId?: SquadId): Promise<ProjectSquadDefaultRecord | undefined> {
+    if (projectKey.trim() === '') throw new AgentTeamError('project key must not be empty', 'INVALID_DISPATCH')
+    if (squadId === undefined) {
+      await this.projectDefaults().delete(projectKey)
+      return undefined
+    }
+    if (this.squads().get(squadId) === undefined) {
+      throw new AgentTeamError(`squad "${squadId}" does not exist`, 'SQUAD_NOT_FOUND')
+    }
+    const record: ProjectSquadDefaultRecord = { projectKey, squadId, enabled: true }
+    await this.projectDefaults().put(projectKey, record)
+    return record
+  }
+
   /**
    * Dynamic official system-prompt section for a live parent Agent. Harness
    * currently exposes no tool-choice control, so this is an instruction seam:
@@ -278,7 +473,7 @@ export class AgentTeamService extends Service {
    */
   squadModeGuidance(agent: Agent | undefined): string {
     if (agent === undefined) return ''
-    const mode = this.getSessionSquadMode(SessionId(agent.id))
+    const mode = this.getEffectiveSessionSquadMode(agent)
     if (mode === undefined) return ''
     const squad = this.squads().get(mode.squadId)
     if (squad === undefined) return ''
@@ -289,6 +484,7 @@ export class AgentTeamService extends Service {
       ? this.config.defaultExecutionMode
       : 'serial')
     const contextMode = squad.contextMode ?? this.config.defaultContextMode
+    const guaranteed = (squad.triggerMode ?? 'guaranteed') === 'guaranteed'
     return [
       '<agent_team_squad_mode>',
       `Squad mode is enabled for this conversation. Active squad id: ${mode.squadId}.`,
@@ -301,11 +497,18 @@ export class AgentTeamService extends Service {
         : [`Collaboration note: ${squad.collabNote}`]),
       order,
       `Default executionMode: ${executionMode}. Default contextMode: ${contextMode}.`,
-      'For each new ordinary user request, call dispatch_to_squad exactly once before your final answer.',
-      `Pass squadId exactly as "${mode.squadId}" and turn the current user request into a concrete shared task.`,
-      'When there is no fixed order, pass memberOrder as a complete, unique permutation of all member ids; use assignments for member-specific tasks.',
-      'After the tool result, synthesize the member outputs into one final answer for the user; explicitly mention partial or failed members when relevant.',
-      'Do not call dispatch_to_squad again for the same user request after receiving its result.',
+      ...(guaranteed
+        ? [
+            'The host runs this squad before your request and injects one dsh-agent-team-gui notice containing the plan and member results.',
+            'Do not call dispatch_to_squad again when that notice is present. Synthesize it into one final answer and name partial or failed members.',
+          ]
+        : [
+            'For each new ordinary user request, call dispatch_to_squad exactly once before your final answer.',
+            `Pass squadId exactly as "${mode.squadId}" and turn the current user request into a concrete shared task.`,
+            'When there is no fixed order, pass memberOrder as a complete, unique permutation of all member ids; use assignments for member-specific tasks.',
+            'After the tool result, synthesize the member outputs into one final answer for the user; explicitly mention partial or failed members when relevant.',
+            'Do not call dispatch_to_squad again for the same user request after receiving its result.',
+          ]),
       '</agent_team_squad_mode>',
     ].join('\n')
   }
@@ -372,11 +575,22 @@ export class AgentTeamService extends Service {
       for (const [id] of this.listSquads()) await this.squads().delete(id)
       const importedSquadIds = new Set(squadsToWrite.map(item => item.id))
       for (const [sessionId, sessionMode] of this.sessionModes().entries()) {
-        if (!importedSquadIds.has(sessionMode.squadId)) await this.sessionModes().delete(sessionId)
+        if (sessionMode.squadId !== undefined && !importedSquadIds.has(sessionMode.squadId)) {
+          await this.sessionModes().delete(sessionId)
+        }
+      }
+      for (const [projectKey, project] of this.projectDefaults().entries()) {
+        if (!importedSquadIds.has(project.squadId)) await this.projectDefaults().delete(projectKey)
+      }
+      for (const [key, version] of this.squadVersions().entries()) {
+        if (!importedSquadIds.has(version.squadId)) await this.squadVersions().delete(key)
       }
     }
     for (const { id, record } of agentsToWrite) await this.agents().put(id, record)
-    for (const { id, record } of squadsToWrite) await this.squads().put(id, record)
+    for (const { id, record } of squadsToWrite) {
+      await this.squads().put(id, record)
+      await this.recordSquadVersion(id, record)
+    }
     return { agents: agentsToWrite.length, squads: squadsToWrite.length }
   }
 
@@ -402,7 +616,7 @@ export class AgentTeamService extends Service {
     if (this.squads().get(squadId) === undefined) {
       throw new AgentTeamError(`squad "${squadId}" does not exist`, 'SQUAD_NOT_FOUND')
     }
-    return this.squads().update(squadId, squad => {
+    const updated = await this.squads().update(squadId, squad => {
       if (squad.members.includes(agentId)) {
         throw new AgentTeamError(`agent "${agentId}" is already in squad "${squadId}"`, 'INVALID_MEMBERS')
       }
@@ -412,6 +626,8 @@ export class AgentTeamService extends Service {
         ...(squad.executionOrder === undefined ? {} : { executionOrder: [...squad.executionOrder, agentId] }),
       }
     })
+    await this.recordSquadVersion(squadId, updated)
+    return updated
   }
 
   /** Remove one member from a squad using storage-domain atomic update. */
@@ -419,13 +635,18 @@ export class AgentTeamService extends Service {
     if (this.squads().get(squadId) === undefined) {
       throw new AgentTeamError(`squad "${squadId}" does not exist`, 'SQUAD_NOT_FOUND')
     }
-    return this.squads().update(squadId, squad => ({
-      ...squad,
-      members: squad.members.filter(memberId => memberId !== agentId),
-      ...(squad.executionOrder === undefined
-        ? {}
-        : { executionOrder: squad.executionOrder.filter(memberId => memberId !== agentId) }),
-    }))
+    const updated = await this.squads().update(squadId, (squad) => {
+      const { leaderAgentId, ...withoutLeader } = squad
+      return {
+        ...(leaderAgentId === agentId ? withoutLeader : squad),
+        members: squad.members.filter(memberId => memberId !== agentId),
+        ...(squad.executionOrder === undefined
+          ? {}
+          : { executionOrder: squad.executionOrder.filter(memberId => memberId !== agentId) }),
+      }
+    })
+    await this.recordSquadVersion(squadId, updated)
+    return updated
   }
 
   private resolveMembers(
@@ -490,11 +711,83 @@ export class AgentTeamService extends Service {
       .join('')
   }
 
+  private messageText(message: UserMessage): string {
+    return message.content
+      .filter((block): block is Extract<ContentBlock, { type: 'text' }> => block.type === 'text')
+      .map(block => block.text)
+      .join('\n')
+  }
+
+  private renderSquadContext(result: SquadDispatchResult): string {
+    return [
+      `The selected squad has already completed this user request. Do not dispatch it again.`,
+      `Squad run result (canonical JSON):`,
+      JSON.stringify(result),
+      `Synthesize these results into the final answer. Preserve material disagreements and explicitly name failed or skipped work.`,
+    ].join('\n\n')
+  }
+
   private errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error)
   }
 
-  private async settleRun(member: ResolvedMember, run: SubagentRun): Promise<SquadMemberResult> {
+  private addUsage(...samples: Array<AgentTokenUsage | undefined>): AgentTokenUsage {
+    const present = samples.filter((sample): sample is AgentTokenUsage => sample !== undefined)
+    const buckets = present.reduce((total, sample) => ({
+      uncachedInputTokens: total.uncachedInputTokens + sample.uncachedInputTokens,
+      outputTokens: total.outputTokens + sample.outputTokens,
+      cacheReadTokens: total.cacheReadTokens + sample.cacheReadTokens,
+      cacheWriteTokens: total.cacheWriteTokens + sample.cacheWriteTokens,
+    }), { uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0 })
+    return {
+      ...buckets,
+      totalTokens: buckets.uncachedInputTokens + buckets.outputTokens + buckets.cacheReadTokens + buckets.cacheWriteTokens,
+      providerReported: present.length > 0 && present.every(sample => sample.providerReported),
+    }
+  }
+
+  private usageFor(run: SubagentRun): AgentTokenUsage | undefined {
+    if (run.localAgent === undefined) return undefined
+    try {
+      const projections = this.ctx.get('sessionProjections') as SessionProjectionService
+      const value = projections.snapshot(run.localAgent.session).values['tokenUsage'] as Partial<TokenUsageProjection> | undefined
+      if (value === undefined) return undefined
+      const uncachedInputTokens = value.uncachedInputTokens ?? 0
+      const outputTokens = value.outputTokens ?? 0
+      const cacheReadTokens = value.cacheReadTokens ?? 0
+      const cacheWriteTokens = value.cacheWriteTokens ?? 0
+      if (![uncachedInputTokens, outputTokens, cacheReadTokens, cacheWriteTokens]
+        .every(item => Number.isSafeInteger(item) && item >= 0)) return undefined
+      return {
+        uncachedInputTokens,
+        outputTokens,
+        cacheReadTokens,
+        cacheWriteTokens,
+        totalTokens: uncachedInputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
+        providerReported: true,
+      }
+    } catch (error: unknown) {
+      this.ctx.logger.warn(`[agent-team-gui] official tokenUsage read failed: ${this.errorText(error)}`)
+      return undefined
+    }
+  }
+
+  private async updateRun(id: DispatchId, update: (record: SquadRunRecord) => SquadRunRecord): Promise<void> {
+    if (this.runs().get(id) !== undefined) await this.runs().update(id, update)
+  }
+
+  private async updateRunMember(
+    dispatchId: DispatchId,
+    agentId: AgentId,
+    update: (record: SquadRunMember) => SquadRunMember,
+  ): Promise<void> {
+    await this.updateRun(dispatchId, run => ({
+      ...run,
+      members: run.members.map(member => member.agentId === agentId ? update(member) : member),
+    }))
+  }
+
+  private async settleRun(member: ResolvedMember, run: SubagentRun, attempts: number, startedAt: number): Promise<SquadMemberResult> {
     let result: SubagentResult | undefined
     let executionError: unknown
     try {
@@ -502,6 +795,7 @@ export class AgentTeamService extends Service {
     } catch (error: unknown) {
       executionError = error
     }
+    const usage = this.usageFor(run)
     let disposalError: unknown
     try {
       await run.dispose()
@@ -522,6 +816,10 @@ export class AgentTeamService extends Service {
       ...run.localAgent === undefined ? {} : { childId: run.localAgent.id },
       ...result === undefined ? {} : { stopReason: result.stopReason },
       output: result?.output ?? [],
+      attempts,
+      startedAt,
+      endedAt: Date.now(),
+      ...usage === undefined ? {} : { usage },
       ...errors.length === 0 ? {} : { error: errors.join('; ') },
     }
   }
@@ -534,36 +832,203 @@ export class AgentTeamService extends Service {
     chainText: string,
     parent: Agent,
     signal: AbortSignal,
+    dispatchId: DispatchId,
+    attempt: number,
+    route?: { readonly provider: string; readonly model: string },
   ): Promise<SquadMemberResult> {
     const prompt = this.promptFor(squad, member, sharedTask, chainText)
+    const startedAt = Date.now()
+    const selectedRoute = route ?? { provider: member.record.provider, model: member.record.model }
+    await this.updateRunMember(dispatchId, member.id, current => ({
+      ...current,
+      provider: selectedRoute.provider,
+      model: selectedRoute.model,
+      status: 'running',
+      attempts: attempt,
+      startedAt,
+    }))
     this.ctx.logger.info(`[agent-team-gui] starting ${squad.name}/${member.record.name}`)
+    const timeout = new AbortController()
+    const timer = squad.memberTimeoutMs === undefined
+      ? undefined
+      : setTimeout(() => timeout.abort(new Error(`member timed out after ${squad.memberTimeoutMs}ms`)), squad.memberTimeoutMs)
+    const memberSignal = squad.memberTimeoutMs === undefined ? signal : AbortSignal.any([signal, timeout.signal])
     try {
       const run = await this.ctx.subagents.start(provider, {
         label: `${squad.name}/${member.record.name}`,
         prompt: [{ type: 'text', text: prompt }],
         parent,
-        signal,
+        signal: memberSignal,
         agentOptions: {
-          provider: member.record.provider,
-          model: member.record.model,
+          provider: selectedRoute.provider,
+          model: selectedRoute.model,
           ...member.record.maxTokens === undefined ? {} : { maxTokens: member.record.maxTokens },
         },
         ...member.record.toolScope === undefined ? {} : { toolFilter: member.record.toolScope },
         ...member.record.systemPrompt.length === 0 ? {} : { persona: member.record.systemPrompt },
       })
-      const settled = await this.settleRun(member, run)
+      const settled = await this.settleRun(member, run, attempt, startedAt)
+      await this.updateRunMember(dispatchId, member.id, current => ({
+        ...current,
+        status: settled.status,
+        attempts: settled.attempts,
+        ...(settled.endedAt === undefined ? {} : { endedAt: settled.endedAt }),
+        ...(settled.runId === undefined ? {} : { runId: settled.runId }),
+        ...(settled.childId === undefined ? {} : { childId: settled.childId }),
+        ...(settled.stopReason === undefined ? {} : { stopReason: settled.stopReason }),
+        output: settled.output,
+        ...(settled.error === undefined ? {} : { error: settled.error }),
+        ...(settled.usage === undefined ? {} : { usage: settled.usage }),
+      }))
       this.ctx.logger.info(`[agent-team-gui] finished ${squad.name}/${member.record.name}: ${settled.status}`)
       return settled
     } catch (error: unknown) {
       const message = this.errorText(error)
       this.ctx.logger.warn(`[agent-team-gui] failed ${squad.name}/${member.record.name}: ${message}`)
-      return {
+      const failed: SquadMemberResult = {
         agentId: member.id,
         agentName: member.record.name,
         status: 'failed',
         output: [],
+        attempts: attempt,
+        startedAt,
+        endedAt: Date.now(),
         error: `start failed: ${message}`,
       }
+      await this.updateRunMember(dispatchId, member.id, current => ({
+        ...current,
+        status: signal.aborted ? 'cancelled' : 'failed',
+        attempts: attempt,
+        ...(failed.endedAt === undefined ? {} : { endedAt: failed.endedAt }),
+        ...(failed.error === undefined ? {} : { error: failed.error }),
+      }))
+      return failed
+    } finally {
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }
+
+  private async runMemberWithPolicy(
+    provider: string,
+    squad: SquadRecord,
+    member: ResolvedMember,
+    sharedTask: string,
+    chainText: string,
+    parent: Agent,
+    signal: AbortSignal,
+    dispatchId: DispatchId,
+  ): Promise<SquadMemberResult> {
+    const first = await this.runMember(provider, squad, member, sharedTask, chainText, parent, signal, dispatchId, 1)
+    if (first.status === 'completed' || signal.aborted || (squad.failurePolicy ?? 'continue') !== 'retry-once') return first
+    const fallback = member.record.fallbackProvider !== undefined && member.record.fallbackModel !== undefined
+      ? { provider: member.record.fallbackProvider, model: member.record.fallbackModel }
+      : undefined
+    const second = await this.runMember(provider, squad, member, sharedTask, chainText, parent, signal, dispatchId, 2, fallback)
+    const combined = {
+      ...second,
+      attempts: 2,
+      usage: this.addUsage(first.usage, second.usage),
+      ...second.status === 'completed' ? {} : { error: [first.error, second.error].filter(Boolean).join('; ') },
+    }
+    await this.updateRunMember(dispatchId, member.id, current => ({
+      ...current,
+      usage: combined.usage,
+      ...combined.error === undefined ? {} : { error: combined.error },
+    }))
+    return combined
+  }
+
+  private async createAutomaticPlan(
+    squad: SquadRecord,
+    task: string,
+    parent: Agent,
+    signal: AbortSignal,
+  ): Promise<SquadExecutionPlan | undefined> {
+    if (squad.executionOrder !== undefined || squad.leaderAgentId === undefined) return undefined
+    const leader = this.agents().get(squad.leaderAgentId)
+    if (leader === undefined) return undefined
+    const provider = squad.contextMode === 'fork' ? 'fork' : this.config.defaultProvider
+    const memberIds = squad.members.map(String)
+    const outputSchema = {
+      type: 'object' as const,
+      additionalProperties: false,
+      properties: {
+        summary: { type: 'string' as const },
+        memberOrder: { type: 'array' as const, items: { type: 'string' as const, enum: memberIds } },
+        assignments: {
+          type: 'array' as const,
+          items: {
+            type: 'object' as const,
+            additionalProperties: false,
+            properties: { agentId: { type: 'string' as const, enum: memberIds }, task: { type: 'string' as const } },
+            required: ['agentId', 'task'],
+          },
+        },
+      },
+      required: ['summary', 'memberOrder', 'assignments'],
+    }
+    let run: SubagentRun | undefined
+    try {
+      run = await this.ctx.subagents.start(provider, {
+        label: `${squad.name}/Planner`,
+        parent,
+        signal,
+        prompt: [{ type: 'text', text: [
+          `Plan this squad task without doing the task yourself:\n${task}`,
+          `Members: ${squad.members.map((id) => {
+            const record = this.agents().get(id)
+            return `${id}: ${record?.name ?? 'missing'} — ${record?.systemPrompt ?? ''}`
+          }).join('\n')}`,
+          'Return every member exactly once in memberOrder and one concrete assignment for every member.',
+        ].join('\n\n') }],
+        outputSchema,
+        agentOptions: {
+          provider: leader.provider,
+          model: leader.model,
+          ...leader.maxTokens === undefined ? {} : { maxTokens: leader.maxTokens },
+        },
+        ...leader.toolScope === undefined ? {} : { toolFilter: leader.toolScope },
+        persona: `${leader.systemPrompt}\nYou are the squad leader. Produce a concise executable division of work.`,
+      })
+      const result = await run.result
+      const usage = this.usageFor(run)
+      const structured = result.structured as { summary?: unknown; memberOrder?: unknown; assignments?: unknown } | undefined
+      if (result.stopReason !== 'completed' || structured === undefined
+        || typeof structured.summary !== 'string' || !Array.isArray(structured.memberOrder)
+        || !Array.isArray(structured.assignments)) throw new Error(`planner ended without a valid plan (${result.stopReason})`)
+      const order = structured.memberOrder.map(String).map(AgentId)
+      const orderSet = new Set(order)
+      if (order.length !== squad.members.length || orderSet.size !== order.length || !squad.members.every(id => orderSet.has(id))) {
+        throw new Error('planner memberOrder is not a complete squad permutation')
+      }
+      const assignments = structured.assignments.map((raw) => {
+        const value = raw as { agentId?: unknown; task?: unknown }
+        if (typeof value.agentId !== 'string' || typeof value.task !== 'string') throw new Error('planner assignment is invalid')
+        return { agentId: AgentId(value.agentId), task: value.task }
+      })
+      const assignmentIds = assignments.map(item => item.agentId)
+      if (assignments.length !== squad.members.length || new Set(assignmentIds).size !== assignmentIds.length
+        || !squad.members.every(id => assignmentIds.includes(id))) {
+        throw new Error('planner assignments must cover every squad member exactly once')
+      }
+      return {
+        summary: structured.summary,
+        memberOrder: order,
+        assignments,
+        leaderAgentId: squad.leaderAgentId,
+        ...usage === undefined ? {} : { usage },
+      }
+    } catch (error: unknown) {
+      return {
+        summary: 'Automatic planning failed; using the configured member order and shared task.',
+        memberOrder: [...squad.members],
+        assignments: [],
+        leaderAgentId: squad.leaderAgentId,
+        warning: this.errorText(error),
+        ...run === undefined || this.usageFor(run) === undefined ? {} : { usage: this.usageFor(run)! },
+      }
+    } finally {
+      if (run !== undefined) await run.dispose().catch(() => undefined)
     }
   }
 
@@ -572,7 +1037,12 @@ export class AgentTeamService extends Service {
    * `tool/result` records contain this complete result, while each returned
    * child id points to the provider-owned child Session and its descriptor.
    */
-  async dispatch(request: SquadDispatchRequest, parent: Agent, signal: AbortSignal): Promise<SquadDispatchResult> {
+  async dispatch(
+    request: SquadDispatchRequest,
+    parent: Agent,
+    signal: AbortSignal,
+    trace: { readonly sessionId?: SessionId; readonly sourceMessageId?: string } = {},
+  ): Promise<SquadDispatchResult> {
     if (request.task.trim().length === 0) {
       throw new AgentTeamError('dispatch task must not be empty', 'INVALID_DISPATCH')
     }
@@ -593,32 +1063,140 @@ export class AgentTeamService extends Service {
     if (executionMode === 'parallel' && contextMode === 'chain') {
       throw new AgentTeamError('contextMode "chain" requires serial execution', 'INVALID_DISPATCH')
     }
-    const members = this.resolveMembers(squad, request.assignments, request.memberOrder)
-    const provider = contextMode === 'fork' ? 'fork' : this.config.defaultProvider
-    let results: SquadMemberResult[]
-    if (executionMode === 'parallel') {
-      results = await Promise.all(members.map(member =>
-        this.runMember(provider, squad, member, request.task, '', parent, signal)))
-    } else {
-      results = []
-      let chainText = ''
-      for (const member of members) {
-        const result = await this.runMember(provider, squad, member, request.task, chainText, parent, signal)
-        results.push(result)
-        if (contextMode === 'chain') chainText = this.resultText(result.output)
-      }
+    // Reject malformed caller overrides before creating a durable run record.
+    if (request.assignments !== undefined || request.memberOrder !== undefined) {
+      this.resolveMembers(squad, request.assignments, request.memberOrder)
     }
-    const completed = results.filter(result => result.status === 'completed').length
-    return {
-      dispatchId: DispatchId(randomUUID()),
+    const dispatchId = DispatchId(randomUUID())
+    const startedAt = Date.now()
+    const controller = new AbortController()
+    this.activeRunControllers.set(dispatchId, controller)
+    const runSignal = AbortSignal.any([signal, controller.signal])
+    const initial: SquadRunRecord = {
+      id: dispatchId,
+      sessionId: trace.sessionId ?? parent.id,
+      ...trace.sourceMessageId === undefined ? {} : { sourceMessageId: trace.sourceMessageId },
+      ...parent.session.header.cwd === undefined ? {} : { projectKey: parent.session.header.cwd },
       squadId: request.squadId,
       squadName: squad.name,
       task: request.task,
       executionMode,
       contextMode,
-      status: completed === results.length ? 'completed' : completed === 0 ? 'failed' : 'partial',
-      members: results,
+      status: squad.executionOrder === undefined && squad.leaderAgentId !== undefined ? 'planning' : 'running',
+      startedAt,
+      members: squad.members.map((id) => {
+        const record = this.agents().get(id)
+        return {
+          agentId: id,
+          agentName: record?.name ?? String(id),
+          provider: record?.provider ?? '',
+          model: record?.model ?? '',
+          status: 'pending' as const,
+          attempts: 0,
+          output: [],
+        }
+      }),
+      usage: { ...ZERO_USAGE },
     }
+    await this.runs().put(dispatchId, initial)
+    const plan = request.memberOrder === undefined && request.assignments === undefined
+      ? await this.createAutomaticPlan(squad, request.task, parent, runSignal)
+      : undefined
+    await this.updateRun(dispatchId, run => ({
+      ...run,
+      status: 'running',
+      ...plan === undefined ? {} : { plan, usage: this.addUsage(plan.usage) },
+    }))
+    const members = this.resolveMembers(
+      squad,
+      request.assignments ?? (plan !== undefined && plan.assignments.length > 0 ? plan.assignments : undefined),
+      request.memberOrder ?? plan?.memberOrder,
+    )
+    const provider = contextMode === 'fork' ? 'fork' : this.config.defaultProvider
+    let results: SquadMemberResult[]
+    try {
+      results = []
+      if (executionMode === 'parallel') {
+        const concurrency = Math.min(squad.maxConcurrency ?? members.length, members.length)
+        for (let offset = 0; offset < members.length; offset += concurrency) {
+          const batch = members.slice(offset, offset + concurrency)
+          results.push(...await Promise.all(batch.map(member =>
+            this.runMemberWithPolicy(provider, squad, member, request.task, '', parent, runSignal, dispatchId))))
+          const used = this.addUsage(plan?.usage, ...results.map(result => result.usage))
+          if (runSignal.aborted || ((squad.failurePolicy ?? 'continue') === 'stop' && results.some(item => item.status === 'failed'))
+            || (squad.tokenBudget !== undefined && used.totalTokens >= squad.tokenBudget)) break
+        }
+      } else {
+        let chainText = ''
+        for (const member of members) {
+          if (runSignal.aborted) break
+          const result = await this.runMemberWithPolicy(provider, squad, member, request.task, chainText, parent, runSignal, dispatchId)
+          results.push(result)
+          if (contextMode === 'chain') chainText = this.resultText(result.output)
+          const used = this.addUsage(plan?.usage, ...results.map(item => item.usage))
+          if (((squad.failurePolicy ?? 'continue') === 'stop' && result.status === 'failed')
+            || (squad.tokenBudget !== undefined && used.totalTokens >= squad.tokenBudget)) break
+        }
+      }
+      const executed = new Set(results.map(result => result.agentId))
+      for (const member of members.filter(item => !executed.has(item.id))) {
+        await this.updateRunMember(dispatchId, member.id, current => ({
+          ...current,
+          status: runSignal.aborted ? 'cancelled' : 'skipped',
+          endedAt: Date.now(),
+          error: runSignal.aborted ? 'run cancelled before this member started' : 'skipped by failure or token-budget policy',
+        }))
+      }
+      const completed = results.filter(result => result.status === 'completed').length
+      const endedAt = Date.now()
+      const usage = this.addUsage(plan?.usage, ...results.map(result => result.usage))
+      const status = runSignal.aborted ? 'failed'
+        : completed === members.length ? 'completed'
+          : completed === 0 ? 'failed' : 'partial'
+      const result: SquadDispatchResult = {
+        dispatchId,
+        squadId: request.squadId,
+        squadName: squad.name,
+        task: request.task,
+        executionMode,
+        contextMode,
+        status,
+        members: results,
+        usage,
+        startedAt,
+        endedAt,
+        ...plan === undefined ? {} : { plan },
+      }
+      await this.updateRun(dispatchId, run => ({
+        ...run,
+        status: runSignal.aborted ? 'cancelled' : status,
+        endedAt,
+        usage,
+        ...plan === undefined ? {} : { plan },
+      }))
+      return result
+    } finally {
+      this.activeRunControllers.delete(dispatchId)
+    }
+  }
+
+  /** Newest-first durable run history, optionally scoped to one parent session. */
+  listRuns(sessionId?: SessionId, limit = 50): SquadRunRecord[] {
+    return [...this.runs().entries()].map(([, run]) => run)
+      .filter(run => sessionId === undefined || run.sessionId === sessionId)
+      .sort((left, right) => right.startedAt - left.startedAt)
+      .slice(0, Math.max(1, Math.min(limit, 200)))
+  }
+
+  getRun(id: DispatchId): SquadRunRecord | undefined {
+    return this.runs().get(id)
+  }
+
+  cancelRun(id: DispatchId): boolean {
+    const controller = this.activeRunControllers.get(id)
+    if (controller === undefined) return false
+    controller.abort(new Error('cancelled from Agent Team GUI'))
+    return true
   }
 }
 

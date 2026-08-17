@@ -40,6 +40,9 @@ export interface AgentRecord {
   readonly model: string
   readonly maxTokens?: number
   readonly toolScope?: AgentToolScope
+  /** Optional route used by retry-once when the primary route fails. */
+  readonly fallbackProvider?: string
+  readonly fallbackModel?: string
 }
 
 /** Durable squad definition. One agent may appear in several squads. */
@@ -53,11 +56,25 @@ export interface SquadRecord {
   readonly executionMode?: 'serial' | 'parallel'
   /** Squad-specific default; plugin config is used when omitted. */
   readonly contextMode?: 'spawn' | 'fork' | 'chain'
+  /** Member used to create an automatic plan when no fixed order exists. */
+  readonly leaderAgentId?: AgentId
+  /** Whether an ordinary Send is intercepted before the parent model request. */
+  readonly triggerMode?: 'guaranteed' | 'model-tool'
+  /** Member failure handling for one dispatch. */
+  readonly failurePolicy?: 'continue' | 'stop' | 'retry-once'
+  /** Maximum parallel members started at once. */
+  readonly maxConcurrency?: number
+  /** Per-attempt timeout. */
+  readonly memberTimeoutMs?: number
+  /** Soft provider-reported token ceiling for the whole run. */
+  readonly tokenBudget?: number
 }
 
 /** Durable per-session selection that enables normal-conversation squad mode. */
 export interface SessionSquadModeRecord {
-  readonly squadId: SquadId
+  readonly squadId?: SquadId
+  /** Explicitly disabled so a project default does not immediately re-enable the session. */
+  readonly disabled?: boolean
 }
 
 /** Resolved session mode returned to host/RPC callers. */
@@ -94,6 +111,31 @@ export interface SquadMemberResult {
   readonly stopReason?: string
   readonly output: ContentBlock[]
   readonly error?: string
+  readonly attempts: number
+  readonly startedAt?: number
+  readonly endedAt?: number
+  readonly usage?: AgentTokenUsage
+}
+
+/** Provider-reported token usage, folded by the official dsh tokenUsage projection. */
+export interface AgentTokenUsage {
+  readonly uncachedInputTokens: number
+  readonly outputTokens: number
+  readonly cacheReadTokens: number
+  readonly cacheWriteTokens: number
+  readonly totalTokens: number
+  /** False only when no local official projection was available. */
+  readonly providerReported: boolean
+}
+
+/** Optional automatic plan produced by the squad leader. */
+export interface SquadExecutionPlan {
+  readonly summary: string
+  readonly memberOrder: AgentId[]
+  readonly assignments: SquadAssignment[]
+  readonly leaderAgentId?: AgentId
+  readonly usage?: AgentTokenUsage
+  readonly warning?: string
 }
 
 /** Canonical squad result; it is lossless JSON when materialized by the tool registry. */
@@ -106,6 +148,63 @@ export interface SquadDispatchResult {
   readonly contextMode: 'spawn' | 'fork' | 'chain'
   readonly status: 'completed' | 'partial' | 'failed'
   readonly members: SquadMemberResult[]
+  readonly usage: AgentTokenUsage
+  readonly startedAt: number
+  readonly endedAt: number
+  readonly plan?: SquadExecutionPlan
+}
+
+/** Durable progress/history row used by the Web run center. */
+export interface SquadRunRecord {
+  readonly id: DispatchId
+  readonly sessionId: SessionId
+  readonly sourceMessageId?: string
+  readonly projectKey?: string
+  readonly squadId: SquadId
+  readonly squadName: string
+  readonly task: string
+  readonly executionMode: 'serial' | 'parallel'
+  readonly contextMode: 'spawn' | 'fork' | 'chain'
+  readonly status: 'planning' | 'running' | 'completed' | 'partial' | 'failed' | 'cancelled'
+  readonly startedAt: number
+  readonly endedAt?: number
+  readonly members: SquadRunMember[]
+  readonly usage: AgentTokenUsage
+  readonly plan?: SquadExecutionPlan
+  readonly error?: string
+}
+
+/** One live or settled row within a durable squad run. */
+export interface SquadRunMember {
+  readonly agentId: AgentId
+  readonly agentName: string
+  readonly provider: string
+  readonly model: string
+  readonly status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'skipped'
+  readonly attempts: number
+  readonly startedAt?: number
+  readonly endedAt?: number
+  readonly runId?: string
+  readonly childId?: string
+  readonly stopReason?: string
+  readonly output: ContentBlock[]
+  readonly error?: string
+  readonly usage?: AgentTokenUsage
+}
+
+/** One immutable squad revision retained for restore and audit. */
+export interface SquadVersionRecord {
+  readonly squadId: SquadId
+  readonly version: number
+  readonly createdAt: number
+  readonly record: SquadRecord
+}
+
+/** Per-workspace default applied to new sessions without an explicit selection. */
+export interface ProjectSquadDefaultRecord {
+  readonly projectKey: string
+  readonly squadId: SquadId
+  readonly enabled: boolean
 }
 
 /** One agent row inside an exported definition document. */
@@ -117,6 +216,8 @@ export interface AgentExportItem {
   readonly model: string
   readonly maxTokens?: number
   readonly toolScope?: AgentToolScope
+  readonly fallbackProvider?: string
+  readonly fallbackModel?: string
 }
 
 /** One squad row inside an exported definition document. */
@@ -128,6 +229,12 @@ export interface SquadExportItem {
   readonly executionOrder?: AgentId[]
   readonly executionMode?: 'serial' | 'parallel'
   readonly contextMode?: 'spawn' | 'fork' | 'chain'
+  readonly leaderAgentId?: AgentId
+  readonly triggerMode?: 'guaranteed' | 'model-tool'
+  readonly failurePolicy?: 'continue' | 'stop' | 'retry-once'
+  readonly maxConcurrency?: number
+  readonly memberTimeoutMs?: number
+  readonly tokenBudget?: number
 }
 
 /** Versioned, self-describing dump of every durable agent/squad definition. */

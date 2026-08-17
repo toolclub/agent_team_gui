@@ -8,6 +8,9 @@ import { agent, createService, populate, researcherId, reviewerId, squadId, writ
 describe('AgentTeamService export/import', () => {
   it('exports a versioned document that round-trips into an empty store', async () => {
     const source = await populate()
+    await source.service.updateAgent(researcherId, {
+      ...agent('Researcher'), fallbackProvider: 'configured', fallbackModel: 'researcher-backup',
+    })
     await source.service.updateSquad(squadId, {
       name: 'Delivery',
       members: [researcherId, writerId, reviewerId],
@@ -25,6 +28,7 @@ describe('AgentTeamService export/import', () => {
     const result = await target.service.importDefinitions(doc)
     expect(result).toEqual({ agents: 3, squads: 1 })
     expect(target.service.listAgents()).toEqual(source.service.listAgents())
+    expect(target.service.getAgent(researcherId)).toMatchObject({ fallbackModel: 'researcher-backup' })
     expect(target.service.listSquads()).toEqual(source.service.listSquads())
   })
 
@@ -56,6 +60,8 @@ describe('AgentTeamService export/import', () => {
     const state = await populate()
     const sessionId = SessionId('conversation')
     await state.service.setSessionSquadMode(sessionId, squadId)
+    await state.service.setProjectDefault('/workspace/project', squadId)
+    await state.service.updateSquad(squadId, { name: 'Delivery revised', members: [researcherId, writerId, reviewerId] })
     const doc = {
       format: 'agent-team-gui/definitions',
       version: 1,
@@ -73,6 +79,8 @@ describe('AgentTeamService export/import', () => {
     expect(state.service.listAgents().map(([id]) => id)).toEqual([researcherId])
     expect(state.service.listSquads()).toEqual([])
     expect(state.service.getSessionSquadMode(sessionId)).toBeUndefined()
+    expect(state.service.getProjectDefault('/workspace/project')).toBeUndefined()
+    expect(state.service.listSquadVersions(squadId)).toEqual([])
   })
 
   it('rejects duplicate ids and unknown member references before writing anything', async () => {

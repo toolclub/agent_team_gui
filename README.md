@@ -10,12 +10,12 @@
 Give every member its own model and tool policy, save reusable teams in Settings, then select a
 squad beside the composer and keep chatting normally.
 
-![Manage persistent multi-model squads in DeepSeek Harness Settings](assets/team-settings.jpg)
+![Manage persistent multi-model squads in DeepSeek Harness Settings](assets/team-settings-v0.4.jpg)
 
 ## 60-second install
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.1.0
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.0
 dsh --profile web
 ```
 
@@ -29,9 +29,11 @@ never stores API keys.
 | Global persistent agents and squads | Build a team once, then reuse it across projects and conversations |
 | Fixed or model-planned execution order | Pin a repeatable workflow, or let the lead model plan roles for each task |
 | Serial/parallel execution with spawn/fork/chain context | Match collaboration topology to the task instead of forcing one pattern |
-| Parent tool trace plus child sessions | Inspect which member did what and diagnose failures |
+| Live run center plus official token usage | Inspect plans, outputs, retries, failures, and each member's real provider-reported tokens |
 
-![Enable a saved squad directly in a DeepSeek Harness conversation](assets/squad-mode.jpg)
+![Enable a saved squad directly in a DeepSeek Harness conversation](assets/squad-mode-v0.4.jpg)
+
+![Inspect member progress and provider-reported token usage](assets/team-runs-v0.4.jpg)
 
 If this workflow is useful, a [GitHub Star](https://github.com/toolclub/dsh-agent-team-gui) helps
 other DeepSeek Harness users discover it. Bug reports and real squad recipes are equally welcome.
@@ -76,21 +78,23 @@ Provider and model choices are read from dsh's existing model configuration.
 
 Current capabilities:
 
-- Durable agent/squad records and per-session squad-mode selection through dsh `storage-domain`.
-- Settings forms to create, edit, and delete global agents and squads, including a configured-model
-  picker.
-- Per-conversation squad selection and an explicit collaboration toggle; when enabled, ordinary
-  Send activates the selected squad mode and instructs the lead model to collaborate, while
-  disabling it returns to normal single-agent sends.
-- Optional fixed member order on a squad; without one, the model determines member assignments and
-  execution order from the request.
-- Per-agent `{ provider, model, maxTokens? }` route and tool restrictions; no API-key storage.
+- Durable agents, squads, immutable squad revisions, run history, per-session selection, and optional
+  per-project defaults through dsh `storage-domain`.
+- Settings forms, quick-start templates, safe merge/replace import preview, cloning, revision restore,
+  and a model-route diagnostic for global agents and squads.
+- Per-conversation selector and toggle. In the default **Guaranteed** mode, ordinary Send runs the
+  squad at the host boundary before the lead model answers; it no longer depends on the model
+  deciding to call a tool. A legacy model-tool mode remains available.
+- Optional fixed order; otherwise an optional planning lead produces the complete per-request member
+  order and assignments. Invalid plans safely fall back to the configured order.
+- Per-agent primary and fallback `{ provider, model, maxTokens? }` routes plus visual tool
+  allow/deny policies; no API-key storage.
 - Model-callable `dispatch_to_squad` with optional explicit per-agent assignments.
-- Serial or parallel execution and `spawn`, `fork`, or serial-only `chain` context modes.
-- Explicit per-member success/failure results. One member failure does not silently cancel the
-  remaining squad.
-- Complete dispatch input/output in the parent session's append-only `tool/call` and `tool/result`
-  records, with child session/run IDs in each member result.
+- Serial or bounded-parallel execution; `spawn`, `fork`, or serial-only `chain` context; member
+  timeout, continue/stop/retry-once policy, fallback routes, cancellation, and a soft token budget.
+- A per-conversation **Team runs** view and live composer dock with the plan, member progress,
+  outputs, retries, timings, child IDs, and official dsh `tokenUsage` buckets. Monetary prices are
+  intentionally not guessed because Harness providers do not expose a stable price table.
 
 ## Prerequisites
 
@@ -159,7 +163,7 @@ Run each command from the directory that contains `dsh-agent-team-gui`.
    Expected: dsh starts normally, **Settings → Teams** is available, and conversations show
    the squad selector and collaboration toggle. When info-level host logging is enabled, the log
    also contains
-   `[agent-team-gui] durable registry and dispatch_to_squad ready`.
+   `[agent-team-gui] v0.4 registry, guaranteed conversation dispatch, run center and token usage ready`.
 
 ## Install from a tarball
 
@@ -181,12 +185,12 @@ A built tarball contains compiled output and therefore needs no install-script a
    ```
 
    Expected: pnpm prints the generated archive name, normally
-   `dsh-agent-team-gui-0.1.0.tgz`. Use the exact path printed by your pnpm version below.
+   `dsh-agent-team-gui-0.4.0.tgz`. Use the exact path printed by your pnpm version below.
 
 3. Install that archive:
 
    ```sh
-   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.1.0.tgz
+   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.0.tgz
    ```
 
    Expected: pnpm reports `dsh-agent-team-gui` as added without an `allowBuilds` prompt. If `pack`
@@ -374,10 +378,12 @@ summary.
 ### Conversation collaboration toggle
 
 1. Start `dsh --profile web` and open **Settings → Teams**.
-2. Create the agents. Choose each provider/model from the routes already configured in dsh;
-   optionally enter max tokens and comma-separated allowed/denied tools.
-3. Create a global squad, select its members, add an optional collaboration note, and optionally
-   pin a fixed member order. Leave the order unset to let the model plan roles and ordering.
+2. Create the agents. Choose each primary and optional fallback provider/model from routes already
+   configured in dsh; optionally set max tokens and visual tool permissions. Or start from one of
+   the development, review, and product templates.
+3. Create a global squad, select its members, and optionally pin a fixed member order. Without a
+   fixed order, select a planning lead to generate assignments and order for each request. Configure
+   serial/parallel context, retry/stop behavior, timeout, concurrency, and a soft token budget.
 4. Open any conversation, select **Release review** in its squad selector, and enable squad
    collaboration.
 5. Type the task in the normal composer and select **Send**. Disable the toggle to return that
@@ -392,12 +398,14 @@ Assistant: [the selected squad collaborates using the current conversation as pa
 Assistant: The release-review squad recommends ... Reviewer: ... Test agent: ...
 ```
 
-The selected squad is conversation-scoped and its mode is durable; both session modes and global
-agent/squad definitions survive restart. Deleting a selected squad automatically disables affected
-session modes. Sending does not require a second task box or a separate Dispatch button.
-Internally, a dynamic system prompt tells the lead model to call `dispatch_to_squad` once and
-summarize its result for the normal assistant response. This is a best-effort model instruction,
-not an API-level forced tool call; see Known limitations.
+The selected squad is conversation-scoped and durable. The star beside the selector optionally
+makes it the default for every conversation rooted in the same project directory; a conversation
+can still opt out. Global definitions, modes, revisions, and run history survive restart. Deleting a
+selected squad cleans affected session and project defaults. Sending needs no second task box or
+Dispatch button. In default Guaranteed mode, the host runs the team during dsh's official
+`agent/pre-step` waterfall and appends the canonical squad result before the lead model generates
+the normal assistant response. If orchestration itself fails, the lead model is still allowed to
+answer and receives a visible failure notice.
 
 ### Export and import definitions
 
@@ -406,8 +414,9 @@ not an API-level forced tool call; see Known limitations.
 - **Export** downloads `agent-team-gui-<date>.json` containing `{ "format":
   "agent-team-gui/definitions", "version": 1, "agents": [...], "squads": [...] }` — every record with
   its durable id, plus model routes (never API keys).
-- **Import** reads such a file and applies it with **merge** semantics: document rows are upserted by
-  id, rows already in the store that the document does not mention are kept, and a squad may
+- **Import** first previews agent/team counts and lets the user choose **merge** or **replace**.
+  Merge upserts document rows by
+  id, keeps existing rows the document does not mention, and lets a squad
   reference an agent that already exists in the store. The whole document is validated first — shape,
   duplicate ids, model routes, and squad member references — so a rejected import writes nothing.
   (The durable writes themselves are not a single transaction: a storage failure mid-import can leave
@@ -419,14 +428,14 @@ document the entire store, and then a squad may only reference agents present in
 
 ## Observability and failure behavior
 
-The parent session's ordinary `tool/call` and durable text `tool/result` events retain the request
-and complete canonical JSON aggregate. Every member result includes the provider-owned child
-session/run IDs when a
-child started, so its trajectory can be inspected through dsh's existing subagent/session views.
-The host log also records member start/finish/failure. Results distinguish complete, partial, and
-failed members. A member failure is aggregated with its error and does not silently stop unrelated
-members. The plugin contributes no long-lived subprocess; Cordis owns tool/listener cleanup, and
-the storage domain is closed when the plugin unloads.
+Every execution creates a durable run record before planning starts. **Team runs** shows the plan,
+live member state, full text outputs, attempts, errors, duration, and provider-owned child/run IDs;
+active runs can be cancelled. Token totals reuse dsh's official `tokenUsage` session projection and
+keep uncached input, cache read, cache write, and output buckets separate. The plugin reports tokens
+instead of inventing currency amounts because Harness does not currently expose a stable provider
+price table. Model-tool calls also retain the complete canonical JSON in standard durable
+`tool/result` text. The host log records member lifecycle. Cordis owns listener/tool cleanup, and
+the storage domain closes when the plugin unloads.
 
 ## Uninstall
 
@@ -447,23 +456,29 @@ list. Durable records under the dsh storage backend are not automatically delete
 - No custom `squad/*` session event types: the current out-of-tree API cannot register them in
   dsh's known-event catalog. Observability relies on standard tool events, child sessions, and host
   logs.
-- The storage domain is version 0; developer-preview releases may reject or require migration of
-  older on-disk data.
-- Model route names are validated by dsh when children run; a removed/misspelled provider or model
-  produces an explicit member failure.
-- Squad mode is best-effort model orchestration: the dynamic system prompt instructs exactly one
-  `dispatch_to_squad` call, but the current Harness generation API exposes no `toolChoice` control
-  with which the plugin could hard-force that call.
-- Large fan-outs do not yet use the workflow engine's concurrency controls.
+- The storage domain is version 0. v0.4 adds tables compatibly, but future developer-preview
+  releases may still require explicit migrations.
+- Routes are validated on save/import and can be rechecked from Settings. A route removed later is
+  recorded as an explicit member failure; retry-once can use that member's fallback route.
+- Default Guaranteed mode is host-driven. The optional **Model tool** trigger remains best-effort
+  because Harness exposes no `toolChoice` control.
+- The token budget is a soft boundary: a member already running cannot be stopped at the exact token
+  threshold; it prevents later members/batches from starting.
+- Token cost is reported in tokens, not money, until Harness exposes stable per-provider pricing.
 - dsh APIs are pre-stable, so compatibility is intentionally bounded to `>=0.1.0-rc.5 <0.2.0`.
 
 ## Roadmap
 
-- Add bulk editing and richer per-agent assignment controls in Settings.
-- Add schema migrations for durable definitions.
-- Add bounded concurrency and richer trajectory projections for large squads.
+- Schema migrations once the upstream storage contract stabilizes.
+- Optional provider price adapters if Harness publishes a canonical pricing interface.
+- Shareable community template packs and aggregated project-level run analytics.
 
 ## Contributing
+
+The concise Chinese walkthrough [从零开发一个 DeepSeek Harness 插件](docs/developing-a-deepseek-harness-plugin.zh-CN.md)
+explains `apply`, class-based Service plugins, profile/bundle wiring, local verification, and GitHub
+installation with links to the official Harness documentation. Release details are in the
+[changelog](CHANGELOG.md).
 
 1. Open an issue describing the behavior and dsh version.
 2. Install dependencies with `pnpm install` and build with `pnpm run build`.

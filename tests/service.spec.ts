@@ -42,12 +42,15 @@ describe('AgentTeamService CRUD', () => {
       name: 'Delivery',
       members: [researcherId, writerId, reviewerId],
       executionOrder: [reviewerId, writerId, researcherId],
+      leaderAgentId: writerId,
     })
     await service.createSquad({ name: 'Second', members: [writerId] }, SquadId('second'))
 
     await expect(service.deleteAgent(writerId)).resolves.toBe(true)
     expect(service.getSquad(squadId)?.members).toEqual([researcherId, reviewerId])
     expect(service.getSquad(squadId)?.executionOrder).toEqual([reviewerId, researcherId])
+    expect(service.getSquad(squadId)?.leaderAgentId).toBeUndefined()
+    expect(service.listSquadVersions(squadId).map(item => item.version)).toEqual([2, 1])
     expect(service.getSquad(SquadId('second'))?.members).toEqual([])
     expect(service.getAgent(writerId)).toBeUndefined()
   })
@@ -76,15 +79,16 @@ describe('AgentTeamService CRUD', () => {
       squadId,
       squadName: 'Delivery',
     })
-    const guidance = service.squadModeGuidance({ id: sessionId } as unknown as Agent)
-    expect(guidance).toContain('call dispatch_to_squad exactly once')
-    expect(guidance).toContain(`Pass squadId exactly as "${squadId}"`)
+    const live = { id: sessionId, session: { header: {} } } as unknown as Agent
+    const guidance = service.squadModeGuidance(live)
+    expect(guidance).toContain('host runs this squad before your request')
+    expect(guidance).toContain('Do not call dispatch_to_squad again')
     expect(guidance).toContain('researcher (Researcher, configured/researcher)')
     expect(guidance).toContain('Collaboration note: Cross-check claims.')
-    expect(guidance).toContain('memberOrder as a complete, unique permutation')
+    expect(guidance).toContain('No fixed member order is configured')
 
     await expect(service.setSessionSquadMode(sessionId)).resolves.toBeUndefined()
-    expect(service.squadModeGuidance({ id: sessionId } as unknown as Agent)).toBe('')
+    expect(service.squadModeGuidance(live)).toBe('')
   })
 
   it('clears every session mode that points at a deleted squad', async () => {
@@ -97,6 +101,42 @@ describe('AgentTeamService CRUD', () => {
     await expect(service.deleteSquad(squadId)).resolves.toBe(true)
     expect(service.getSessionSquadMode(one)).toBeUndefined()
     expect(service.getSessionSquadMode(two)).toBeUndefined()
+  })
+
+  it('keeps immutable squad versions and restores a prior definition', async () => {
+    const state = await populate()
+    await state.service.updateSquad(squadId, { name: 'Delivery v2', members: [researcherId, writerId] })
+    await state.service.updateSquad(squadId, { name: 'Delivery v3', members: [reviewerId] })
+
+    expect(state.service.listSquadVersions(squadId).map(item => item.version)).toEqual([2, 1])
+    await state.service.restoreSquadVersion(squadId, 1)
+    expect(state.service.getSquad(squadId)).toMatchObject({ name: 'Delivery v2', members: [researcherId, writerId] })
+    expect(state.service.listSquadVersions(squadId).map(item => item.version)).toEqual([3, 2, 1])
+  })
+
+  it('inherits a project default but lets one session explicitly opt out', async () => {
+    const state = await populate()
+    const session = { id: SessionId('project-chat'), session: { header: { cwd: '/workspace/project' } } } as unknown as Agent
+    await state.service.setProjectDefault('/workspace/project', squadId)
+    expect(state.service.getEffectiveSessionSquadMode(session)).toMatchObject({ squadId, squadName: 'Delivery' })
+
+    await state.service.setSessionSquadMode(session.id)
+    expect(state.service.getEffectiveSessionSquadMode(session)).toBeUndefined()
+  })
+
+  it('diagnoses every primary and fallback model route without mutating the team', async () => {
+    const state = await populate()
+    await state.service.updateAgent(researcherId, {
+      ...agent('Researcher'), fallbackProvider: 'configured', fallbackModel: 'backup',
+    })
+    const before = state.service.getSquad(squadId)
+    const result = await state.service.diagnoseSquad(squadId)
+    expect(result.ok).toBe(true)
+    expect(result.checks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'definition', ok: true }),
+      expect.objectContaining({ name: 'Researcher', ok: true, message: expect.stringContaining('backup') }),
+    ]))
+    expect(state.service.getSquad(squadId)).toEqual(before)
   })
 })
 
@@ -248,6 +288,79 @@ describe('AgentTeamService dispatch', () => {
       output: [{ type: 'text', text: 'answer' }],
       error: 'run cleanup failed: cleanup broke',
     })
+  })
+
+  it('retries once on the configured fallback route and records durable progress', async () => {
+    const routes: Array<{ provider?: string; model?: string }> = []
+    let attempt = 0
+    const state = createService({
+      start: async (_provider, request) => {
+        routes.push(request.agentOptions ?? {})
+        attempt += 1
+        return {
+          id: SessionId(`retry-${attempt}`),
+          localAgent: undefined,
+          result: Promise.resolve(attempt === 1
+            ? { output: [{ type: 'text', text: 'partial' }], stopReason: 'max-tokens' }
+            : { output: [{ type: 'text', text: 'recovered' }], stopReason: 'completed' }),
+          async dispose() {},
+        }
+      },
+    })
+    await state.agents.put(researcherId, {
+      ...agent('Researcher'), fallbackProvider: 'configured', fallbackModel: 'backup',
+    })
+    await state.squads.put(squadId, {
+      name: 'Delivery', members: [researcherId], failurePolicy: 'retry-once',
+    })
+
+    const result = await state.service.dispatch({ squadId, task: 'recover' }, state.parent, new AbortController().signal)
+    expect(result).toMatchObject({ status: 'completed', members: [{ status: 'completed', attempts: 2 }] })
+    expect(routes).toEqual([
+      expect.objectContaining({ provider: 'configured', model: 'researcher' }),
+      expect.objectContaining({ provider: 'configured', model: 'backup' }),
+    ])
+    expect(state.service.listRuns(state.parent.id)).toMatchObject([{
+      id: result.dispatchId, status: 'completed', members: [{ status: 'completed', attempts: 2 }],
+    }])
+  })
+
+  it('uses the official token projection and stops starting members after the soft budget', async () => {
+    let call = 0
+    const state = createService({
+      start: async (_provider, request) => {
+        call += 1
+        const localAgent = { id: SessionId(`usage-${call}`), session: { marker: call } } as unknown as Agent
+        return {
+          id: localAgent.id,
+          localAgent,
+          result: Promise.resolve({ output: [{ type: 'text', text: request.label ?? '' }], stopReason: 'completed' }),
+          async dispose() {},
+        }
+      },
+    })
+    state.ctx.provide('sessionProjections', {
+      snapshot: () => ({ values: { tokenUsage: {
+        uncachedInputTokens: 80, outputTokens: 30, cacheReadTokens: 10, cacheWriteTokens: 0,
+      } } }),
+    })
+    await state.agents.put(researcherId, agent('Researcher'))
+    await state.agents.put(writerId, agent('Writer'))
+    await state.squads.put(squadId, {
+      name: 'Delivery', members: [researcherId, writerId], executionMode: 'serial', tokenBudget: 100,
+    })
+
+    const result = await state.service.dispatch({ squadId, task: 'budgeted' }, state.parent, new AbortController().signal)
+    expect(call).toBe(1)
+    expect(result.usage).toEqual({
+      uncachedInputTokens: 80, outputTokens: 30, cacheReadTokens: 10, cacheWriteTokens: 0,
+      totalTokens: 120, providerReported: true,
+    })
+    expect(result.status).toBe('partial')
+    expect(state.service.getRun(result.dispatchId)?.members).toMatchObject([
+      { agentId: researcherId, status: 'completed' },
+      { agentId: writerId, status: 'skipped', error: expect.stringContaining('token-budget') },
+    ])
   })
 })
 

@@ -18,6 +18,7 @@ interface SnapshotValue {
   agents: Array<{ id: string; name: string }>
   squads: Array<{ id: string; name: string }>
   models: Array<{ provider: string; name: string; models: Array<{ id: string; name: string }> }>
+  tools: Array<{ name: string; description: string }>
 }
 
 describe('agent team RPC handler', () => {
@@ -30,7 +31,7 @@ describe('agent team RPC handler', () => {
     const result = await call<SnapshotValue>(handler, 'snapshot', {}, signal())
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(result.value.apiVersion).toBe(1)
+    expect(result.value.apiVersion).toBe(2)
     expect(result.value.agents).toHaveLength(3)
     expect(result.value.squads).toHaveLength(1)
     expect(result.value.models).toEqual([{
@@ -38,6 +39,7 @@ describe('agent team RPC handler', () => {
       name: 'Configured',
       models: [{ id: 'deepseek-v4', name: 'DeepSeek V4' }],
     }])
+    expect(result.value.tools).toEqual([{ name: 'read_file', description: 'Read a workspace file' }])
   })
 
   it('creates, updates, and deletes agents through the endpoint boundary', async () => {
@@ -141,7 +143,7 @@ describe('agent team RPC handler', () => {
   })
 
   it('dispatch rejects an unknown squad id', async () => {
-    const state = createService({ agentsGet: () => ({ id: SessionId('parent') }) as unknown })
+    const state = createService({ agentsGet: () => ({ id: SessionId('parent'), session: { header: {} } }) as unknown })
     await state.agents.put(researcherId, agent('Researcher'))
     await state.squads.put(squadId, { name: 'Delivery', members: [researcherId] })
     const handler = createAgentTeamRpcHandler(state.ctx, state.service)
@@ -154,7 +156,7 @@ describe('agent team RPC handler', () => {
   })
 
   it('dispatches a full squad through the endpoint', async () => {
-    const state = createService({ agentsGet: () => ({ id: SessionId('parent') }) as unknown })
+    const state = createService({ agentsGet: () => ({ id: SessionId('parent'), session: { header: {} } }) as unknown })
     await state.agents.put(researcherId, agent('Researcher'))
     await state.agents.put(writerId, agent('Writer'))
     await state.squads.put(squadId, { name: 'Delivery', members: [researcherId, writerId] })
@@ -184,7 +186,11 @@ describe('agent team RPC handler', () => {
       sessionId: 'conversation', squadId, squadName: 'Delivery',
     } } })
     await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
-      .resolves.toEqual(enabled)
+      .resolves.toEqual({ ok: true, value: {
+        mode: { sessionId: 'conversation', squadId, squadName: 'Delivery' },
+        projectKey: null,
+        projectDefault: null,
+      } })
     await expect(call(handler, 'mode/set', { sessionId: 'conversation', squadId: null }, signal()))
       .resolves.toEqual({ ok: true, value: { mode: null } })
   })
@@ -210,5 +216,30 @@ describe('agent team RPC handler', () => {
     expect(bad.ok).toBe(false)
     if (bad.ok) return
     expect(bad.error.code).toBe('bad-request')
+  })
+
+  it('exposes versions, diagnostics, project defaults, and durable run history', async () => {
+    let live: unknown
+    const state = createService({ agentsGet: () => live })
+    live = state.parent
+    await state.service.createAgent(agent('Researcher'), researcherId)
+    await state.service.createSquad({ name: 'Delivery', members: [researcherId] }, squadId)
+    await state.service.updateSquad(squadId, { name: 'Delivery v2', members: [researcherId] })
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    const versions = await call<Array<{ version: number }>>(handler, 'squad/versions', { id: squadId }, signal())
+    expect(versions.ok && versions.value.map(item => item.version)).toEqual([2, 1])
+    const diagnosis = await call<{ ok: boolean }>(handler, 'squad/diagnose', { id: squadId }, signal())
+    expect(diagnosis).toEqual({ ok: true, value: expect.objectContaining({ ok: true }) })
+
+    const project = await call(handler, 'project/default-set', { sessionId: state.parent.id, squadId }, signal())
+    expect(project).toEqual({ ok: true, value: expect.objectContaining({ projectDefault: expect.objectContaining({ squadId }) }) })
+
+    const dispatched = await state.service.dispatch({ squadId, task: 'history' }, state.parent, signal())
+    const history = await call<{ runs: Array<{ id: string; status: string }> }>(handler, 'run/list', { sessionId: state.parent.id }, signal())
+    expect(history.ok && history.value.runs).toMatchObject([{ id: dispatched.dispatchId, status: 'completed' }])
+    await expect(call(handler, 'run/get', { id: dispatched.dispatchId }, signal())).resolves.toEqual({
+      ok: true, value: { run: expect.objectContaining({ id: dispatched.dispatchId }) },
+    })
   })
 })

@@ -8,6 +8,8 @@ import {
   AgentTeamController,
   CLIENT_STYLES,
   TeamComposerControl,
+  TeamRunCenter,
+  TeamRunDock,
   TeamSettingsPage,
 } from './AgentTeamDashboard.tsx'
 
@@ -51,6 +53,21 @@ export function apply(ctx: ClientContext): void {
     order: 80,
     inject: () => ({ controller }),
   }, TeamComposerControl))
+
+  ctx.slots.inject('conversation.input.dock', () => ctx.slots.register({
+    name: 'conversation.input.dock',
+    id: 'agent-team-run-dock',
+    order: 15,
+    inject: () => ({ controller }),
+  }, TeamRunDock))
+
+  ctx.slots.inject('conversation.view', () => ctx.slots.register({
+    name: 'conversation.view',
+    id: 'agent-team-runs',
+    order: 20,
+    label: () => localeIsZh() ? '小队运行' : 'Team runs',
+    inject: () => ({ controller }),
+  }, TeamRunCenter))
 }
 
 function localeIsZh(): boolean {

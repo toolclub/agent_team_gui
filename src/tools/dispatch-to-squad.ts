@@ -59,6 +59,10 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
           executionMode: { type: 'string', required: true, enum: ['serial', 'parallel'] },
           contextMode: { type: 'string', required: true, enum: ['spawn', 'fork', 'chain'] },
           status: { type: 'string', required: true, enum: ['completed', 'partial', 'failed'] },
+          startedAt: { type: 'number', required: true },
+          endedAt: { type: 'number', required: true },
+          usage: { type: 'json', required: true },
+          plan: { type: 'json' },
           members: {
             type: 'array',
             required: true,
@@ -74,6 +78,10 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
                 stopReason: { type: 'string' },
                 output: { type: 'array', required: true, items: { type: 'json' } },
                 error: { type: 'string' },
+                attempts: { type: 'number', required: true },
+                startedAt: { type: 'number' },
+                endedAt: { type: 'number' },
+                usage: { type: 'json' },
               },
             },
           },
@@ -102,11 +110,15 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
         ...args.executionMode === undefined ? {} : { executionMode: args.executionMode },
         ...args.contextMode === undefined ? {} : { contextMode: args.contextMode },
       }, exec.agent, exec.signal)
+      const { usage, plan, members, ...rest } = result
       return {
-        ...result,
-        members: result.members.map(member => ({
+        ...rest,
+        usage: usage as unknown as JsonValue,
+        ...plan === undefined ? {} : { plan: plan as unknown as JsonValue },
+        members: members.map(({ usage: memberUsage, output, ...member }) => ({
           ...member,
-          output: member.output as unknown as JsonValue[],
+          output: output as unknown as JsonValue[],
+          ...memberUsage === undefined ? {} : { usage: memberUsage as unknown as JsonValue },
         })),
       }
     },

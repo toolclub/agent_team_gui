@@ -10,12 +10,12 @@
 每个成员可独立配置模型和工具策略；在 Settings 中保存可复用小队，然后在对话输入框旁选择小队，
 像平时一样发送消息即可协作。
 
-![在 DeepSeek Harness Settings 中管理持久化多模型小队](assets/team-settings.jpg)
+![在 DeepSeek Harness Settings 中管理持久化多模型小队](assets/team-settings-v0.4.jpg)
 
 ## 60 秒安装
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.1.0
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.0
 dsh --profile web
 ```
 
@@ -28,9 +28,11 @@ dsh 已配置的模型路由和凭据存储，绝不会保存 API key。
 | 全局持久化的 Agent 与小队 | 建一次队伍，即可跨项目、跨对话复用 |
 | 固定顺序或模型规划顺序 | 固化可重复流程，或让主模型针对每次任务安排角色 |
 | 串行/并行执行与 spawn/fork/chain 上下文 | 按任务选择协作拓扑，不被单一模式限制 |
-| 父会话工具轨迹与成员子会话 | 看清每个成员做了什么，也能定位失败原因 |
+| 实时运行中心与官方 token 用量 | 查看规划、输出、重试、失败，以及每个成员由 provider 上报的真实 token |
 
-![在 DeepSeek Harness 对话中直接开启已保存的小队](assets/squad-mode.jpg)
+![在 DeepSeek Harness 对话中直接开启已保存的小队](assets/squad-mode-v0.4.jpg)
+
+![查看成员进度和 provider 上报的 token 用量](assets/team-runs-v0.4.jpg)
 
 如果它确实解决了你的工作流，点一个 [GitHub Star](https://github.com/toolclub/dsh-agent-team-gui)
 能帮助更多 DeepSeek Harness 用户发现它；也欢迎提交真实小队配方和问题反馈。
@@ -72,17 +74,18 @@ Settings --> 全局 Agent/小队定义 ---------+
 
 当前能力：
 
-- 通过 dsh `storage-domain` 持久化 Agent/小队记录与逐 session 的小队模式选择。
-- 在 Settings 中创建、编辑、删除全局 Agent 与小队，并从已配置模型中选择路由。
-- 每个对话独立选择小队并显式开启协作；开启后，普通发送会启用所选小队模式并指示主模型协作，
-  关闭后恢复普通单 Agent 发送。
-- 小队可选固定成员顺序；未固定时由模型依据请求决定成员分工与执行顺序。
-- 每个 Agent 独立的 `{ provider, model, maxTokens? }` 路由与工具限制；不存储 API key。
+- 通过 dsh `storage-domain` 持久化 Agent、小队、不可变版本、运行历史、逐 session 选择与项目默认。
+- Settings 提供 CRUD、快速模板、安全的合并/替换导入预览、复制、版本恢复和模型路由检查。
+- 每个对话独立选择小队并显式开关。默认的**可靠自动运行**会在主模型回答前由 Host 边界执行
+  小队，不再依赖模型自行决定是否调用工具；仍保留兼容的“模型按需调用”模式。
+- 小队可固定成员顺序；未固定时可指定规划队长，为每次请求生成完整分工与顺序，规划无效时安全
+  回退到已配置顺序。
+- 每个 Agent 独立的主/回退 `{ provider, model, maxTokens? }` 路由与可视化工具权限；不存 API key。
 - 模型可调用 `dispatch_to_squad`，可选显式指定每个 Agent 的任务。
-- 支持串行或并行，以及 `spawn`、`fork`、串行专用的 `chain` 上下文模式。
-- 每个成员都有明确的成功/失败结果；一个成员失败不会静默取消其余成员。
-- 父会话 append-only 的 `tool/call` 与 `tool/result` 记录完整派单输入/输出，每个成员结果包含
-  子会话/run ID。
+- 支持串行/有界并行、`spawn`/`fork`/串行专用 `chain`，以及成员超时、继续/停止/重试一次、
+  回退路由、取消运行与 token 软预算。
+- 每个对话新增**小队运行**视图与输入框实时进度条，展示计划、成员进度、输出、重试、耗时、
+  child ID 和 dsh 官方 `tokenUsage` 分桶。Harness 暂无稳定价格表，因此不会伪造货币金额。
 
 ## 前置条件
 
@@ -146,7 +149,7 @@ pnpm dsh --version
 
    预期：dsh 正常启动，**Settings → 小队**可用，并且对话中出现小队选择器与协作开关。
    若启用了宿主 info 级日志，日志还会包含
-   `[agent-team-gui] durable registry and dispatch_to_squad ready`。
+   `[agent-team-gui] v0.4 registry, guaranteed conversation dispatch, run center and token usage ready`。
 
 ## 从 tarball 安装
 
@@ -167,13 +170,13 @@ pnpm dsh --version
    pnpm --dir ./dsh-agent-team-gui pack
    ```
 
-   预期：pnpm 打印生成的归档文件名，通常是 `dsh-agent-team-gui-0.1.0.tgz`。下一步请使用你的
+   预期：pnpm 打印生成的归档文件名，通常是 `dsh-agent-team-gui-0.4.0.tgz`。下一步请使用你的
    pnpm 版本实际打印的完整路径。
 
 3. 安装该归档：
 
    ```sh
-   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.1.0.tgz
+   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.0.tgz
    ```
 
    预期：pnpm 报告已加入 `dsh-agent-team-gui`，且没有 `allowBuilds` 提示。若 `pack` 把归档写到
@@ -354,10 +357,10 @@ ID，也可以是小队准确名称（不区分大小写）；若名称重复，
 ### 对话协作开关
 
 1. 启动 `dsh --profile web`，打开 **Settings → 小队**。
-2. 创建 Agent，从 dsh 已配置路由中选择 provider/model；可选填写 max tokens 与逗号分隔的
-   允许/禁用工具。
-3. 创建全局小队、勾选成员、可选填写协作说明，并可选固定成员顺序。不设置顺序时由模型规划分工
-   与顺序。
+2. 创建 Agent，从 dsh 已配置路由中选择主模型与可选回退模型；可设置 max tokens 与可视化工具
+   权限。也可以从开发、审查、产品三个模板快速开始。
+3. 创建全局小队、勾选成员并可选固定成员顺序。未固定时可指定规划队长，为每次请求生成分工和
+   顺序；还可配置串/并行上下文、重试/停止、超时、并发数与 token 软预算。
 4. 打开任意对话，在小队选择器中选择**发布审查小队**，并开启小队协作。
 5. 在普通输入框填写任务后点击**发送**。关闭开关后，该对话恢复普通单 Agent 发送。
 
@@ -370,10 +373,11 @@ ID，也可以是小队准确名称（不区分大小写）；若名称重复，
 助手：发布审查小队建议…… Reviewer：…… Test agent：……
 ```
 
-小队选择属于当前对话，且模式会持久化；逐 session 模式和全局 Agent/小队定义都会在重启后保留。
-删除已选小队时，受影响的 session 模式会自动关闭。发送时不需要第二个任务框或单独的“派单”按钮。
-内部会注入动态 system prompt，指示主模型调用一次 `dispatch_to_squad`，再把结果汇总为正常
-assistant 回复。这属于 best-effort 模型指令，而不是 API 层硬性强制的工具调用；详见“已知限制”。
+小队选择属于当前对话且会持久化。选择器旁的星标可将它设为同一项目目录的新对话默认值，单个
+对话仍可显式关闭。全局定义、模式、版本与运行历史都会在重启后保留；删除小队会清理关联的
+session 与项目默认。发送时无需第二个任务框或“派单”按钮。默认的可靠模式会在 dsh 官方
+`agent/pre-step` waterfall 中由 Host 先运行小队，把 canonical 结果加入上下文，再由主模型生成正常
+assistant 回复。即使编排本身失败，主模型也不会被卡死，而会收到清晰失败提示后继续回答。
 
 ### 定义导出/导入
 
@@ -382,8 +386,8 @@ assistant 回复。这属于 best-effort 模型指令，而不是 API 层硬性�
 - **导出**下载 `agent-team-gui-<日期>.json`，内容为 `{ "format": "agent-team-gui/definitions",
   "version": 1, "agents": [...], "squads": [...] }`——每条记录携带持久化 id 与模型路由（绝不包含
   API key）。
-- **导入**读取该文件并按 **merge** 语义应用：文档中的行按 id upsert；文档未提及但已存在的行会
-  保留；小队可以引用存储中已有的 agent。整个文档先做完整校验（结构、重复 id、模型路由、小队
+- **导入**会先预览成员/小队数量，并让用户选择 **merge** 或 **replace**。merge 中的行按 id
+  upsert；文档未提及但已存在的行会保留；小队可以引用存储中已有的 agent。整个文档先做完整校验（结构、重复 id、模型路由、小队
   成员引用），因此被拒绝的导入不会写入任何数据。（持久化写入本身不是单一事务：中途存储失败可能
   留下部分应用的结果。）
 
@@ -392,12 +396,12 @@ assistant 回复。这属于 best-effort 模型指令，而不是 API 层硬性�
 
 ## 可观测性与失败行为
 
-父会话的常规 `tool/call` 与持久化文本 `tool/result` 事件会保留请求和完整 canonical JSON 聚合结果。
-若成员已经启动，其结果
-会包含 provider 所有的 child session/run ID，可通过 dsh 现有 subagent/session 视图检查 trajectory。
-宿主日志也会记录成员的开始/结束/失败。结果会区分完成、部分完成与失败成员。单个成员失败会连同
-错误一起进入聚合结果，不会静默停止无关成员。插件不创建长驻子进程；Cordis 负责工具/监听器清理，
-插件卸载时会关闭 storage domain。
+每次执行都会在规划前创建持久运行记录。**小队运行**页面展示计划、实时成员状态、完整文本输出、
+尝试次数、错误、耗时和 provider 拥有的 child/run ID；活动运行可以取消。Token 数据直接复用 dsh
+官方 `tokenUsage` session projection，分别保留非缓存输入、缓存读取、缓存写入与输出。Harness 当前
+没有稳定的 provider 价格表，所以插件只报告真实 token，不伪造金额。模型工具路径仍会把完整
+canonical JSON 保存在标准持久化 `tool/result` 文本中。宿主日志记录成员生命周期；Cordis 负责
+监听器/工具清理，插件卸载时关闭 storage domain。
 
 ## 卸载
 
@@ -417,20 +421,26 @@ dsh plugin --profile web remove dsh-agent-team-gui
 - 没有独立的 shell CLI/YAML 记录编辑器；请使用 Settings 或同进程 Service API。
 - 尚无自定义 `squad/*` 会话事件类型：当前树外插件 API 无法把它们注册到 dsh known-event catalog。
   可观测性依赖标准工具事件、子会话和宿主日志。
-- storage domain 版本为 0；developer-preview 版本可能拒绝旧磁盘数据或要求迁移。
-- dsh 在子 Agent 运行时验证模型路由名；provider/model 被删除或拼写错误时会形成明确的成员失败。
-- 小队模式属于 best-effort 模型编排：动态 system prompt 会要求恰好调用一次
-  `dispatch_to_squad`，但当前 Harness generation API 没有 `toolChoice`，插件无法在 API 层硬性强制。
-- 大规模 fan-out 尚未使用 workflow engine 的并发控制。
+- storage domain 版本为 0；v0.4 以兼容方式新增表，但未来 developer-preview 版本仍可能需要迁移。
+- 保存/导入时会验证模型路由，也可在 Settings 重新检查；之后被删除的路由会形成明确成员失败，
+  retry-once 可使用该成员回退路由。
+- 默认的可靠模式由 Host 驱动；可选的“模型按需调用”仍是 best-effort，因为 Harness 没有
+  `toolChoice` 控制。
+- token 预算是软边界：不能在精确 token 点中止已运行成员，但会阻止后续成员/批次启动。
+- 在 Harness 提供稳定的 provider 价格接口前，只显示 token 成本，不显示货币金额。
 - dsh API 尚未稳定，因此兼容范围有意限定为 `>=0.1.0-rc.5 <0.2.0`。
 
 ## Roadmap
 
-- 为 Settings 增加批量编辑和更丰富的逐 Agent 分工控制。
-- 为持久化定义增加 schema migration。
-- 为大规模小队增加有界并发与更丰富的 trajectory projection。
+- 上游存储契约稳定后增加正式 schema migration。
+- Harness 发布统一价格接口后，可选接入 provider 价格适配器。
+- 可分享的社区模板包与项目级运行聚合分析。
 
 ## 贡献指南
+
+简明教程[《从零开发一个 DeepSeek Harness 插件》](docs/developing-a-deepseek-harness-plugin.zh-CN.md)
+介绍 `apply`、类 Service 插件、profile/bundle 接线、本地验证和 GitHub 安装，并引用官方 Harness
+文档。版本详情见 [Changelog](CHANGELOG.md)。
 
 1. 创建 issue，说明行为与 dsh 版本。
 2. 用 `pnpm install` 安装依赖，用 `pnpm run build` 构建。

@@ -7,12 +7,12 @@ import { SessionId } from '@deepseek-ai/dsh-session'
 import { z, ZodError } from 'zod'
 import type { AgentTeamService } from './index.ts'
 import { AgentTeamError } from './index.ts'
-import { AgentId, SquadId } from './types.ts'
+import { AgentId, DispatchId, SquadId } from './types.ts'
 
 /** 与浏览器入口共享的 RPC channel。 */
 export const AGENT_TEAM_RPC_CHANNEL = '/agent-team-gui'
 /** Browser/host contract revision. A snapshot handshake prevents mixed-version UIs. */
-export const AGENT_TEAM_RPC_API_VERSION = 1
+export const AGENT_TEAM_RPC_API_VERSION = 2
 
 const emptySchema = z.object({}).strict()
 const idSchema = z.string().min(1)
@@ -26,6 +26,8 @@ const agentInputSchema = z.object({
     allow: z.array(z.string().min(1)).min(1).optional(),
     deny: z.array(z.string().min(1)).min(1).optional(),
   }).refine(value => value.allow !== undefined || value.deny !== undefined).optional(),
+  fallbackProvider: z.string().trim().min(1).optional(),
+  fallbackModel: z.string().trim().min(1).optional(),
 }).strict()
 const squadInputSchema = z.object({
   name: z.string().trim().min(1),
@@ -34,6 +36,12 @@ const squadInputSchema = z.object({
   executionOrder: z.array(idSchema).optional(),
   executionMode: z.enum(['serial', 'parallel']).optional(),
   contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
+  leaderAgentId: idSchema.optional(),
+  triggerMode: z.enum(['guaranteed', 'model-tool']).optional(),
+  failurePolicy: z.enum(['continue', 'stop', 'retry-once']).optional(),
+  maxConcurrency: z.number().int().positive().max(32).optional(),
+  memberTimeoutMs: z.number().int().min(1_000).max(3_600_000).optional(),
+  tokenBudget: z.number().int().positive().optional(),
 }).strict()
 const assignmentSchema = z.object({ agentId: idSchema, task: z.string().min(1) }).strict()
 const dispatchInputSchema = z.object({
@@ -62,6 +70,8 @@ function agentRecord(input: AgentInput) {
         ...(input.toolScope.deny === undefined ? {} : { deny: input.toolScope.deny }),
       },
     }),
+    ...(input.fallbackProvider === undefined ? {} : { fallbackProvider: input.fallbackProvider }),
+    ...(input.fallbackModel === undefined ? {} : { fallbackModel: input.fallbackModel }),
   }
 }
 
@@ -73,6 +83,12 @@ function squadRecord(input: SquadInput) {
     ...(input.executionOrder === undefined ? {} : { executionOrder: input.executionOrder.map(AgentId) }),
     ...(input.executionMode === undefined ? {} : { executionMode: input.executionMode }),
     ...(input.contextMode === undefined ? {} : { contextMode: input.contextMode }),
+    ...(input.leaderAgentId === undefined ? {} : { leaderAgentId: AgentId(input.leaderAgentId) }),
+    ...(input.triggerMode === undefined ? {} : { triggerMode: input.triggerMode }),
+    ...(input.failurePolicy === undefined ? {} : { failurePolicy: input.failurePolicy }),
+    ...(input.maxConcurrency === undefined ? {} : { maxConcurrency: input.maxConcurrency }),
+    ...(input.memberTimeoutMs === undefined ? {} : { memberTimeoutMs: input.memberTimeoutMs }),
+    ...(input.tokenBudget === undefined ? {} : { tokenBudget: input.tokenBudget }),
   }
 }
 
@@ -84,12 +100,19 @@ const snapshotSchema = z.object({
     executionOrder: z.array(z.string()).optional(),
     executionMode: z.enum(['serial', 'parallel']).optional(),
     contextMode: z.enum(['spawn', 'fork', 'chain']).optional(),
+    leaderAgentId: z.string().optional(),
+    triggerMode: z.enum(['guaranteed', 'model-tool']).optional(),
+    failurePolicy: z.enum(['continue', 'stop', 'retry-once']).optional(),
+    maxConcurrency: z.number().optional(),
+    memberTimeoutMs: z.number().optional(),
+    tokenBudget: z.number().optional(),
   })),
   models: z.array(z.object({
     provider: z.string(),
     name: z.string(),
     models: z.array(z.object({ id: z.string(), name: z.string() })),
   })),
+  tools: z.array(z.object({ name: z.string(), description: z.string() })),
 })
 
 function success<T>(value: T): RpcResult<T> {
@@ -136,6 +159,7 @@ async function readSnapshot(ctx: Context, service: AgentTeamService) {
     agents: service.listAgents().map(([id, record]) => ({ id, ...record })),
     squads: service.listSquads().map(([id, record]) => ({ id, ...record, collabNote: record.collabNote ?? '' })),
     models,
+    tools: ctx.tools.schemas().map(tool => ({ name: tool.name, description: tool.description })),
   })
 }
 
@@ -174,9 +198,43 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
           const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
           return success({ deleted: await service.deleteSquad(SquadId(payload.id)) })
         }
+        case 'squad/versions': {
+          const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
+          return success(service.listSquadVersions(SquadId(payload.id)))
+        }
+        case 'squad/restore': {
+          const payload = z.object({ id: idSchema, version: z.number().int().positive() }).strict().parse(rawPayload)
+          await service.restoreSquadVersion(SquadId(payload.id), payload.version)
+          return success({ restored: true })
+        }
+        case 'squad/diagnose': {
+          const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
+          return success(await service.diagnoseSquad(SquadId(payload.id)))
+        }
         case 'mode/get': {
           const payload = z.object({ sessionId: idSchema }).strict().parse(rawPayload)
-          return success({ mode: service.getSessionSquadMode(SessionId(payload.sessionId)) ?? null })
+          const parent = ctx.agents.get(SessionId(payload.sessionId))
+          const projectKey = parent === undefined ? undefined : service.projectKeyFor(parent)
+          return success({
+            mode: parent === undefined
+              ? service.getSessionSquadMode(SessionId(payload.sessionId)) ?? null
+              : service.getEffectiveSessionSquadMode(parent) ?? null,
+            projectKey: projectKey ?? null,
+            projectDefault: projectKey === undefined ? null : service.getProjectDefault(projectKey) ?? null,
+          })
+        }
+        case 'project/default-set': {
+          const payload = z.object({ sessionId: idSchema, squadId: idSchema.nullable() }).strict().parse(rawPayload)
+          const parent = ctx.agents.get(SessionId(payload.sessionId))
+          if (parent === undefined) {
+            return { ok: false, error: { code: 'session-not-found', message: `no live parent agent for session ${payload.sessionId}`, details: { sessionId: SessionId(payload.sessionId) } } }
+          }
+          const projectKey = service.projectKeyFor(parent)
+          if (projectKey === undefined) return success({ projectKey: null, projectDefault: null })
+          return success({
+            projectKey,
+            projectDefault: await service.setProjectDefault(projectKey, payload.squadId === null ? undefined : SquadId(payload.squadId)) ?? null,
+          })
         }
         case 'mode/set': {
           const payload = z.object({ sessionId: idSchema, squadId: idSchema.nullable() }).strict().parse(rawPayload)
@@ -220,7 +278,19 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
             ...payload.memberOrder === undefined ? {} : { memberOrder: payload.memberOrder.map(AgentId) },
             ...payload.executionMode === undefined ? {} : { executionMode: payload.executionMode },
             ...payload.contextMode === undefined ? {} : { contextMode: payload.contextMode },
-          }, parent, signal))
+          }, parent, signal, { sessionId: SessionId(payload.sessionId) }))
+        }
+        case 'run/list': {
+          const payload = z.object({ sessionId: idSchema.optional(), limit: z.number().int().positive().max(200).optional() }).strict().parse(rawPayload)
+          return success({ runs: service.listRuns(payload.sessionId === undefined ? undefined : SessionId(payload.sessionId), payload.limit ?? 50) })
+        }
+        case 'run/get': {
+          const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
+          return success({ run: service.getRun(DispatchId(payload.id)) ?? null })
+        }
+        case 'run/cancel': {
+          const payload = z.object({ id: idSchema }).strict().parse(rawPayload)
+          return success({ cancelled: service.cancelRun(DispatchId(payload.id)) })
         }
         default:
           return {

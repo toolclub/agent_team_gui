@@ -1,7 +1,7 @@
 {
   "name": "dsh-agent-team-gui",
-  "version": "0.1.0",
-  "description": "Persistent multi-model squads for DeepSeek Harness — manage teams in Settings and use them in ordinary conversations",
+  "version": "0.4.0",
+  "description": "Persistent multi-model squads for DeepSeek Harness with guaranteed orchestration, live runs, and token cost monitoring",
   "type": "module",
   "main": "lib/index.js",
   "types": "lib/types/index.d.ts",
@@ -23,6 +23,8 @@
     "lib/types/**/*.d.ts",
     "cordis.patch.yml",
     "assets/*.jpg",
+    "docs/**/*.md",
+    "CHANGELOG.md",
     "README-zh.md"
   ],
   "dsh": {
@@ -45,10 +47,12 @@
     "deepseek-harness",
     "agent",
     "multi-agent",
-    "orchestration"
+    "orchestration",
+    "token-usage",
+    "agent-team"
   ],
   "license": "MIT",
-  "author": "DeepSeek Harness contributors",
+  "author": "leizihao and dsh-agent-team-gui contributors",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/toolclub/dsh-agent-team-gui.git"

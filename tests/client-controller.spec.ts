@@ -10,6 +10,7 @@ const emptySnapshot = (apiVersion = AGENT_TEAM_RPC_API_VERSION): TeamSnapshot =>
   agents: [],
   squads: [],
   models: [],
+  tools: [],
 })
 
 describe('AgentTeamController RPC compatibility', () => {

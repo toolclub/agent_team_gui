@@ -1,10 +1,13 @@
 # agent_team_gui dsh Plugin — Completed Implementation Plan
 
-## Completion status (2026-08-15)
+## Completion status (v0.4, 2026-08-17)
 
-P1–P5 are implemented and verified. The package now ships the durable host service, model-facing
-`dispatch_to_squad` tool, serial/parallel orchestration, loopback-only Connection RPC, Web CRUD and
-composer UI, self-contained Git `prepare`, declarations, bilingual documentation, and bundle patch.
+P1–P5 and the v0.4 product pass are implemented and verified. The package now ships the durable
+host service, guaranteed pre-generation squad execution, optional model-facing
+`dispatch_to_squad`, serial/bounded-parallel orchestration, planning leads, retries and fallbacks,
+official token usage, durable run/revision history, loopback-only Connection RPC, Settings CRUD,
+composer UI and Team Runs view, self-contained Git `prepare`, declarations, bilingual
+documentation, and bundle patch.
 
 Resolved research decisions supersede any earlier proposal below:
 
@@ -16,11 +19,11 @@ Resolved research decisions supersede any earlier proposal below:
   `dsh.client`/`./client` entry; a second browser roster row would start the host plugin twice.
 - The published client preset is not exported. `tsdown.config.ts` therefore implements the verified
   ModuleLoader closure contract locally and produces both `lib/index.js` and `lib/client.js`.
-- Out-of-tree custom Session event registration is not currently supported. Observability uses the
-  parent's standard `tool/call`/`tool/result`, native child sessions/descriptors, run IDs, and host
-  logs; no unsafe `squad/*` events are appended.
-- Validation completed: 7 tests, Host/Client/test TypeScript checks, build, pack contents, absolute
-  dev overlay boot, tarball install into an isolated Web profile, RPC snapshot, and browser CRUD.
+- Out-of-tree custom Session event registration is not currently supported. Observability uses a
+  durable plugin run table, the official `tokenUsage` projection, native child sessions/descriptors,
+  standard tool results where applicable, and host logs; no unsafe `squad/*` events are appended.
+- Validation completed: 36 tests, Host/Client/test TypeScript checks, build, pack contents, and
+  browser runtime checks. The screenshots in `assets/` are captured from the real Web profile.
 
 ## 1. API Confirmation Summary
 
@@ -502,19 +505,20 @@ Or simply `this.ctx.tools.register(defineTool({...}))` — the disposer is auto-
 
 ### Phase P4: UI (Browser Half) + Bundle/Profile Wiring
 
-**Revised interaction goal (implemented and runtime-verified)**: Agent and squad
+**v0.4 interaction goal (implemented and runtime-verified)**: Agent and squad
 definitions are global, durable resources managed under Settings. A conversation selects one squad
 and explicitly toggles collaboration on or off. With collaboration enabled, the ordinary composer
-Send path activates the selected session mode and instructs the lead model to use the squad, with
-the result returned through the normal conversation flow; there is no second task box or separate
-Dispatch button. A squad may pin a fixed member order. If it does not, the model plans member
-assignments and execution order for that request. The model-facing
-`dispatch_to_squad` tool remains the natural-language path.
+Send path activates the selected session mode and, in default Guaranteed mode, the host runs the
+squad in `agent/pre-step` before the lead model generates. The aggregate returns through the normal
+conversation flow; there is no second task box or Dispatch button. A squad may pin a fixed order.
+If it does not, an optional planning lead produces complete member assignments and order, with a
+safe configured-order fallback. The model-facing `dispatch_to_squad` tool remains an explicit
+legacy/automation path.
 
 #### `src/client/index.ts`
 ```typescript
 import type { ClientContext } from '@deepseek-ai/dsh-client-runtime/client'
-import { TeamComposerControl, TeamSettingsPage } from './AgentTeamDashboard.tsx'
+import { TeamComposerControl, TeamRunCenter, TeamRunDock, TeamSettingsPage } from './AgentTeamDashboard.tsx'
 
 export const inject = ['slots', 'connection']
 
@@ -529,6 +533,9 @@ export function apply(ctx: ClientContext): void {
     name: 'conversation.input.right',
     id: 'agent-team-gui-mode',
   }, TeamComposerControl))
+
+  // v0.4 also contributes conversation.input.dock live progress and a
+  // conversation.view tab for durable run details and token usage.
 }
 ```
 Both contributions wait for the shipped slot declaration through `ctx.slots.inject()` before
@@ -538,21 +545,23 @@ registering.
 React component that:
 - Contributes global agent/squad CRUD under Settings.
 - Contributes a per-conversation squad selector and collaboration toggle near the composer.
-- Uses ordinary Send as the collaboration trigger instead of owning another task box/button.
-- Lets a squad pin a fixed member order; an unset order delegates assignments/order to the model.
+- Uses ordinary Send as a guaranteed host trigger instead of owning another task box/button.
+- Lets a squad pin a fixed member order; an unset order can delegate to a configured planning lead.
+- Provides templates, cloning, immutable revisions/restore, diagnostics, primary/fallback model
+  routing, visual tool policies, timeouts, failure policy, concurrency, and soft token budgets.
+- Provides live and durable run surfaces with member outputs, cancellation, attempts, timings, and
+  official provider-reported token buckets.
 - Model picker: calls the dedicated host Connection RPC, which enumerates
   `ctx.llm.listProviders()` + `ctx.llm.listModels(provider)`; the browser never accesses host
   services directly.
 
 The dedicated `/agent-team-gui` Connection RPC with loopback authority remains the verified
-Settings CRUD/snapshot seam and now provides `mode/get`/`mode/set` per session. The host reads
-storage and `ctx.llm`; browser code never imports a host service or calls a bare unvalidated
-endpoint. An enabled mode contributes a dynamic system prompt that asks the lead model to call
-`dispatch_to_squad` exactly once, choose `memberOrder` when the squad has no fixed
-`executionOrder`, and summarize the aggregate in the normal assistant response. This is
-best-effort model instruction because the current GenerateOptions surface has no `toolChoice`
-control. Runtime verification confirmed the Settings page, persistent member/squad CRUD,
-fixed-order reordering, per-conversation selector/toggle, and mode restoration after reload.
+Settings CRUD/snapshot seam and provides mode, project-default, revision, diagnostic, run-history,
+cancel, export, and import endpoints. The host reads storage, `ctx.llm`, `ctx.tools`, and the
+official session projections; browser code never imports a host service or calls a bare
+unvalidated endpoint. Guaranteed mode uses the official `agent/pre-step` waterfall and injects the
+canonical completed aggregate before lead-model generation. Model-tool mode is intentionally
+best-effort because the generation surface has no `toolChoice` control.
 
 #### `tsdown.config.ts`
 Confirmed: the shared dsh preset is monorepo-internal, so the package carries a self-contained
@@ -576,7 +585,8 @@ The full browser half ships in P4; there is no degraded host-only release mode f
 - Model routes: explain that `{ provider, model }` are just route strings; API keys are owned by the credentials seam (`packages/llm/llm-deepseek/src/index.ts:225`).
 - Storage: the plugin uses `storage-domain` with a `agent_team_gui` domain; the profile must wire storage + a backend + storage-domain (the plugin's `cordis.patch.yml` inserts these rows for minimal profiles).
 - Known Limitations: Web profile only, pre-release storage version 0, no custom out-of-tree session
-  event types, serial-only chain, and unbounded `Promise.all` for large fan-outs.
+  event types, serial-only chain, soft (not exact-stop) token budgets, and provider-neutral token
+  rather than monetary reporting.
 
 #### `LICENSE`
 Match the dsh repo's license (check `LICENSE` file at repo root).
