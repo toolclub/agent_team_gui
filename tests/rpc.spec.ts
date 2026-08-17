@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import type { Agent } from '@deepseek-ai/dsh-agent'
 import { SessionId } from '@deepseek-ai/dsh-session'
 import type { RpcResult } from '@deepseek-ai/dsh-host-apiproxy/api'
 import { createAgentTeamRpcHandler } from '../src/rpc.ts'
@@ -188,11 +189,34 @@ describe('agent team RPC handler', () => {
     await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
       .resolves.toEqual({ ok: true, value: {
         mode: { sessionId: 'conversation', squadId, squadName: 'Delivery' },
+        sessionReady: false,
         projectKey: null,
         projectDefault: null,
       } })
     await expect(call(handler, 'mode/set', { sessionId: 'conversation', squadId: null }, signal()))
       .resolves.toEqual({ ok: true, value: { mode: null } })
+  })
+
+  it('restores a project default from the Session before its Agent is live', async () => {
+    const sessionId = SessionId('restoring')
+    const session = { id: sessionId, header: { cwd: '/workspace/project' } } as unknown as Agent['session']
+    const state = createService({ sessionsGet: id => id === sessionId ? session : undefined })
+    await state.agents.put(researcherId, agent('Researcher'))
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId] })
+    await state.projectDefaults.put('/workspace/project', {
+      projectKey: '/workspace/project', squadId, enabled: true,
+    })
+    const handler = createAgentTeamRpcHandler(state.ctx, state.service)
+
+    await expect(call(handler, 'mode/get', { sessionId }, signal())).resolves.toEqual({
+      ok: true,
+      value: {
+        mode: { sessionId, squadId, squadName: 'Delivery' },
+        sessionReady: true,
+        projectKey: '/workspace/project',
+        projectDefault: { projectKey: '/workspace/project', squadId, enabled: true },
+      },
+    })
   })
 
   it('exports and imports definitions through the endpoint boundary', async () => {
@@ -234,6 +258,15 @@ describe('agent team RPC handler', () => {
 
     const project = await call(handler, 'project/default-set', { sessionId: state.parent.id, squadId }, signal())
     expect(project).toEqual({ ok: true, value: expect.objectContaining({ projectDefault: expect.objectContaining({ squadId }) }) })
+    await expect(call(handler, 'mode/get', { sessionId: state.parent.id }, signal())).resolves.toEqual({
+      ok: true,
+      value: {
+        mode: { sessionId: state.parent.id, squadId, squadName: 'Delivery v2' },
+        sessionReady: true,
+        projectKey: '/workspace/project',
+        projectDefault: { projectKey: '/workspace/project', squadId, enabled: true },
+      },
+    })
 
     const dispatched = await state.service.dispatch({ squadId, task: 'history' }, state.parent, signal())
     const history = await call<{ runs: Array<{ id: string; status: string }> }>(handler, 'run/list', { sessionId: state.parent.id }, signal())

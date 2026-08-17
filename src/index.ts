@@ -109,7 +109,7 @@ const ZERO_USAGE: AgentTokenUsage = {
 
 /** Durable registry and orchestrator exposed as `ctx.agentTeamGui`. */
 export class AgentTeamService extends Service {
-  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents', 'systemPrompt', 'sessionProjections']
+  static inject = ['storageDomain', 'tools', 'subagents', 'llm', 'agents', 'sessions', 'systemPrompt', 'sessionProjections']
 
   static Config: z<Config> = z.object({
     defaultProvider: z.string().default('spawn'),
@@ -446,25 +446,42 @@ export class AgentTeamService extends Service {
 
   /** Workspace key used by project defaults without exposing arbitrary client paths. */
   projectKeyFor(agent: Agent): string | undefined {
-    return agent.session.header.cwd
+    return this.projectKeyForSession(agent.session)
+  }
+
+  /** Resolve a workspace from a restored Session before its Agent is live. */
+  projectKeyForSession(session: Agent['session']): string | undefined {
+    return session.header.cwd
   }
 
   /** Resolve explicit session state first, then a durable workspace default. */
-  getEffectiveSessionSquadMode(agent: Agent): SessionSquadModeView | undefined {
-    if (this.isDelegatedAgent(agent)) return undefined
-    const explicit = this.sessionModes().get(agent.id)
-    if (explicit !== undefined) return this.getSessionSquadMode(agent.id)
-    const projectKey = this.projectKeyFor(agent)
+  getEffectiveSessionSquadModeForSession(
+    session: Agent['session'],
+    sessionId: SessionId = session.id,
+  ): SessionSquadModeView | undefined {
+    if (this.isDelegatedSession(session)) return undefined
+    const explicit = this.sessionModes().get(sessionId)
+    if (explicit !== undefined) return this.getSessionSquadMode(sessionId)
+    const projectKey = this.projectKeyForSession(session)
     if (projectKey === undefined) return undefined
     const project = this.projectDefaults().get(projectKey)
     if (project === undefined || !project.enabled) return undefined
     const squad = this.squads().get(project.squadId)
-    return squad === undefined ? undefined : { sessionId: agent.id, squadId: project.squadId, squadName: squad.name }
+    return squad === undefined ? undefined : { sessionId, squadId: project.squadId, squadName: squad.name }
+  }
+
+  /** Resolve the effective mode for an Agent-backed request. */
+  getEffectiveSessionSquadMode(agent: Agent): SessionSquadModeView | undefined {
+    return this.getEffectiveSessionSquadModeForSession(agent.session, agent.id)
   }
 
   /** Durable lineage is the authority: squad members can never auto-dispatch another squad. */
   private isDelegatedAgent(agent: Agent): boolean {
-    const header = agent.session.header
+    return this.isDelegatedSession(agent.session)
+  }
+
+  private isDelegatedSession(session: Agent['session']): boolean {
+    const header = session.header
     return header.origin === 'subagent'
       || header.parentSession !== undefined
       || (header.delegationDepth ?? 0) > 0

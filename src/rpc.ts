@@ -213,12 +213,15 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
         }
         case 'mode/get': {
           const payload = z.object({ sessionId: idSchema }).strict().parse(rawPayload)
-          const parent = ctx.agents.get(SessionId(payload.sessionId))
-          const projectKey = parent === undefined ? undefined : service.projectKeyFor(parent)
+          const sessionId = SessionId(payload.sessionId)
+          const parent = ctx.agents.get(sessionId)
+          const session = parent?.session ?? ctx.sessions.get(sessionId)
+          const projectKey = session === undefined ? undefined : service.projectKeyForSession(session)
           return success({
-            mode: parent === undefined
-              ? service.getSessionSquadMode(SessionId(payload.sessionId)) ?? null
-              : service.getEffectiveSessionSquadMode(parent) ?? null,
+            mode: session === undefined
+              ? service.getSessionSquadMode(sessionId) ?? null
+              : service.getEffectiveSessionSquadModeForSession(session, sessionId) ?? null,
+            sessionReady: session !== undefined,
             projectKey: projectKey ?? null,
             projectDefault: projectKey === undefined ? null : service.getProjectDefault(projectKey) ?? null,
           })

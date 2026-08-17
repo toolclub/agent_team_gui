@@ -7,6 +7,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-settings/client'
 import {
   AgentTeamController,
   CLIENT_STYLES,
+  refreshAgentTeamsOnReconnect,
   TeamComposerControl,
   TeamRunCenter,
   TeamRunDock,
@@ -30,6 +31,14 @@ export function apply(ctx: ClientContext): void {
     return result.value as T
   }
   const controller = new AgentTeamController(call)
+
+  // A browser tab survives `dsh` restarts. Re-read the durable catalog when
+  // the Connection handshake returns; otherwise one early failed snapshot
+  // remains cached until the user happens to save a team in Settings.
+  ctx.effect(
+    () => refreshAgentTeamsOnReconnect(controller, connection.hostDescription),
+    'agent-team-gui: refresh durable teams after reconnect',
+  )
 
   ctx.effect(() => {
     const style = document.createElement('style')

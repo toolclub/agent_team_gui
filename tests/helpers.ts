@@ -64,6 +64,7 @@ export interface FixtureOptions {
   readonly resolveModelInfo?: LlmRuntime['resolveModelInfo']
   /** Live-agent lookup for the RPC dispatch endpoint; defaults to no live sessions. */
   readonly agentsGet?: (sessionId: string) => unknown
+  readonly sessionsGet?: (sessionId: string) => unknown
   readonly toolSchemas?: () => Array<{ readonly name: string; readonly description: string }>
 }
 
@@ -110,6 +111,7 @@ export function createService(options: FixtureOptions = {}): Fixture {
   ctx.provide('subagents', subagents)
   ctx.provide('llm', llm)
   ctx.provide('agents', { get: options.agentsGet ?? (() => undefined) })
+  ctx.provide('sessions', { get: options.sessionsGet ?? (() => undefined) })
   ctx.provide('tools', { schemas: options.toolSchemas ?? (() => [{ name: 'read_file', description: 'Read a workspace file' }]) })
   const service = new AgentTeamService(ctx, {
     defaultProvider: 'spawn',

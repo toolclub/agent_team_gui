@@ -55,6 +55,8 @@ interface ControllerSnapshot {
   status: 'idle' | 'loading' | 'ready' | 'error'
   data: TeamSnapshot
   error: string
+  /** Successful host snapshots; changes after every reconnect refresh. */
+  revision: number
 }
 
 export type AgentTeamRpc = <T>(endpoint: string, payload: unknown) => Promise<T>
@@ -66,9 +68,10 @@ const EMPTY_DATA: TeamSnapshot = { apiVersion: AGENT_TEAM_RPC_API_VERSION, agent
 
 /** 两个 slot 共享的只读目录缓存；持久数据始终由 host service 持有。 */
 export class AgentTeamController {
-  private state: ControllerSnapshot = { status: 'idle', data: EMPTY_DATA, error: '' }
+  private state: ControllerSnapshot = { status: 'idle', data: EMPTY_DATA, error: '', revision: 0 }
   private readonly listeners = new Set<() => void>()
   private pending: Promise<TeamSnapshot> | undefined
+  private queuedRefresh: Promise<TeamSnapshot> | undefined
 
   constructor(readonly call: AgentTeamRpc) {}
 
@@ -80,14 +83,34 @@ export class AgentTeamController {
 
   load(force = false): Promise<TeamSnapshot> {
     if (!force && this.state.status === 'ready') return Promise.resolve(this.state.data)
-    if (this.pending !== undefined) return this.pending
+    if (this.pending !== undefined) {
+      if (!force) return this.pending
+      if (this.queuedRefresh !== undefined) return this.queuedRefresh
+
+      // A reconnect may arrive while the cold-start request is still failing.
+      // Do not let `force` collapse into that stale request: queue one fresh
+      // read after it settles so persisted teams become usable automatically.
+      const active = this.pending
+      const refresh = active.then(
+        () => {
+          this.queuedRefresh = undefined
+          return this.load(true)
+        },
+        () => {
+          this.queuedRefresh = undefined
+          return this.load(true)
+        },
+      )
+      this.queuedRefresh = refresh
+      return refresh
+    }
     this.set({ ...this.state, status: 'loading', error: '' })
     const pending = this.call<TeamSnapshot>('snapshot', {})
       .then((data) => {
         if (data.apiVersion !== AGENT_TEAM_RPC_API_VERSION) {
           throw new Error(incompatibleHostMessage())
         }
-        this.set({ status: 'ready', data, error: '' })
+        this.set({ status: 'ready', data, error: '', revision: this.state.revision + 1 })
         return data
       })
       .catch((reason: unknown) => {
@@ -112,6 +135,44 @@ export class AgentTeamController {
   }
 }
 
+interface HostDescriptionSource {
+  getSnapshot(): unknown | undefined
+  subscribe(listener: () => void): () => void
+}
+
+/** Refresh the shared catalog after every completed DSH connection handshake. */
+export function refreshAgentTeamsOnReconnect(
+  controller: AgentTeamController,
+  source: HostDescriptionSource,
+): () => void {
+  const retryDelays = [100, 300, 1_000, 2_000] as const
+  let generation = 0
+  let timer: ReturnType<typeof setTimeout> | undefined
+
+  const refresh = (): void => {
+    generation += 1
+    const current = generation
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    if (source.getSnapshot() === undefined) return
+
+    const attempt = (index: number): void => {
+      void controller.load(true).catch(() => {
+        if (current !== generation || source.getSnapshot() === undefined || index >= retryDelays.length) return
+        timer = setTimeout(() => { attempt(index + 1) }, retryDelays[index])
+      })
+    }
+    attempt(0)
+  }
+  const unsubscribe = source.subscribe(refresh)
+  refresh()
+  return () => {
+    generation += 1
+    if (timer !== undefined) clearTimeout(timer)
+    unsubscribe()
+  }
+}
+
 interface ModeValue {
   sessionId: string
   squadId: string
@@ -120,6 +181,8 @@ interface ModeValue {
 
 interface ModeResponse {
   mode: ModeValue | null
+  /** False while the restored conversation Agent is not live yet. */
+  sessionReady?: boolean
   projectKey?: string | null
   projectDefault?: { projectKey: string; squadId: string; enabled: boolean } | null
 }
@@ -196,27 +259,56 @@ export function TeamComposerControl({ controller, sessionId, input }: ComposerPr
   }, [controller])
 
   useEffect(() => {
+    if (catalog.status !== 'ready') {
+      setInitialized(false)
+      return
+    }
     const request = ++requestRef.current
+    const retryDelays = [100, 300, 1_000, 2_000] as const
+    let timer: ReturnType<typeof setTimeout> | undefined
     setBusy(true)
     setInitialized(false)
     setError('')
-    controller.call<ModeResponse>('mode/get', { sessionId }).then(({ mode, projectKey: key, projectDefault: inherited }) => {
+
+    const complete = (): void => {
       if (request !== requestRef.current) return
-      setEnabled(mode !== null)
-      setSelected(mode?.squadId ?? '')
-      setProjectKey(key ?? null)
-      setProjectDefault(inherited?.squadId ?? null)
-    }, (reason: unknown) => {
-      if (request !== requestRef.current) return
-      setError(errorText(reason))
-    }).finally(() => {
-      if (request === requestRef.current) {
-        setBusy(false)
-        setInitialized(true)
-      }
-    })
-    return () => { requestRef.current += 1 }
-  }, [controller, sessionId])
+      setBusy(false)
+      setInitialized(true)
+    }
+    const readMode = (attempt: number): void => {
+      void controller.call<ModeResponse>('mode/get', { sessionId }).then((response) => {
+        if (request !== requestRef.current) return
+        // With no restored Session, `mode:null` cannot distinguish an explicit
+        // Solo choice from a project default that has not hydrated yet. Keep
+        // the last trustworthy UI state until the Host can answer completely.
+        if (response.sessionReady !== false || response.mode !== null) {
+          setEnabled(response.mode !== null)
+          setSelected(response.mode?.squadId ?? '')
+          setProjectKey(response.projectKey ?? null)
+          setProjectDefault(response.projectDefault?.squadId ?? null)
+        }
+        if (response.sessionReady === false && attempt < retryDelays.length) {
+          if (response.mode !== null) complete()
+          timer = setTimeout(() => { readMode(attempt + 1) }, retryDelays[attempt])
+          return
+        }
+        complete()
+      }, (reason: unknown) => {
+        if (request !== requestRef.current) return
+        if (attempt < retryDelays.length) {
+          timer = setTimeout(() => { readMode(attempt + 1) }, retryDelays[attempt])
+          return
+        }
+        setError(errorText(reason))
+        complete()
+      })
+    }
+    readMode(0)
+    return () => {
+      requestRef.current += 1
+      if (timer !== undefined) clearTimeout(timer)
+    }
+  }, [catalog.revision, catalog.status, controller, sessionId])
 
   useEffect(() => {
     if (catalog.status !== 'ready') return
@@ -278,8 +370,9 @@ export function TeamComposerControl({ controller, sessionId, input }: ComposerPr
   // locking on it made the control appear permanently disabled and flicker.
   const locked = busy || !initialized || input.phase === 'submitting'
   const hasSquads = catalog.data.squads.length > 0
+  const visibleError = error || catalog.error
   return (
-    <div className={`atg-composer${enabled ? ' is-on' : ''}`} title={error || (zh ? '开启后，普通发送会在主模型回复前可靠运行所选小队' : 'When enabled, the selected team runs before the lead model replies')}>
+    <div className={`atg-composer${enabled ? ' is-on' : ''}`} title={visibleError || (zh ? '开启后，普通发送会在主模型回复前可靠运行所选小队' : 'When enabled, the selected team runs before the lead model replies')}>
       <span className="atg-mode-label">{initialized ? (enabled ? (zh ? '小队' : 'Team') : (zh ? '单人' : 'Solo')) : '…'}</span>
       <select
         className="atg-composer-select"
@@ -314,7 +407,7 @@ export function TeamComposerControl({ controller, sessionId, input }: ComposerPr
       >
         <span />
       </button>
-      {error ? <span className="atg-composer-error" role="alert" title={error}>!</span> : null}
+      {visibleError ? <span className="atg-composer-error" role="alert" title={visibleError}>!</span> : null}
     </div>
   )
 }

@@ -10,6 +10,8 @@
 - Make the parent conversation's Main Agent the default dynamic workflow planner: it assigns every
   configured member exactly once according to role/model/tool capabilities, while fixed order remains
   an explicit override and planning failures fall back to differentiated role-scoped assignments.
+- Rehydrate the persisted team catalog and per-conversation/project selection after every Web
+  reconnect, with bounded cold-start retries so restarting DSH no longer requires re-saving a team.
 
 ## 0.4.0 — 2026-08-17
 
