@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   AGENT_TEAM_RPC_API_VERSION,
   AgentTeamController,
+  isAuthoritativeModeResponse,
   refreshAgentTeamsOnReconnect,
   type TeamSnapshot,
 } from '../src/client/AgentTeamDashboard.tsx'
@@ -87,5 +88,23 @@ describe('AgentTeamController RPC compatibility', () => {
     await vi.waitFor(() => { expect(controller.getSnapshot().revision).toBe(2) })
     expect(calls).toBe(2)
     dispose()
+  })
+
+  it('treats an explicit Solo override as authoritative before Session hydration', () => {
+    expect(isAuthoritativeModeResponse({
+      mode: null,
+      sessionOverride: 'disabled',
+      sessionReady: false,
+    })).toBe(true)
+    expect(isAuthoritativeModeResponse({
+      mode: null,
+      sessionOverride: 'inherit',
+      sessionReady: false,
+    })).toBe(false)
+    expect(isAuthoritativeModeResponse({
+      mode: { squadId: 'saved' },
+      sessionOverride: 'enabled',
+      sessionReady: false,
+    })).toBe(true)
   })
 })

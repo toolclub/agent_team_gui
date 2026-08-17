@@ -221,6 +221,7 @@ export function createAgentTeamRpcHandler(ctx: Context, service: AgentTeamServic
             mode: session === undefined
               ? service.getSessionSquadMode(sessionId) ?? null
               : service.getEffectiveSessionSquadModeForSession(session, sessionId) ?? null,
+            sessionOverride: service.getSessionSquadOverride(sessionId),
             sessionReady: session !== undefined,
             projectKey: projectKey ?? null,
             projectDefault: projectKey === undefined ? null : service.getProjectDefault(projectKey) ?? null,

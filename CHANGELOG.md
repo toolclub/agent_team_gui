@@ -12,6 +12,8 @@
   an explicit override and planning failures fall back to differentiated role-scoped assignments.
 - Rehydrate the persisted team catalog and per-conversation/project selection after every Web
   reconnect, with bounded cold-start retries so restarting DSH no longer requires re-saving a team.
+- Keep an explicitly disabled Solo conversation immediately interactive after refresh, while
+  unresolved inherited project defaults continue hydrating in the background.
 
 ## 0.4.0 — 2026-08-17
 

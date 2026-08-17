@@ -117,11 +117,16 @@ describe('AgentTeamService CRUD', () => {
   it('inherits a project default but lets one session explicitly opt out', async () => {
     const state = await populate()
     const session = { id: SessionId('project-chat'), session: { header: { cwd: '/workspace/project' } } } as unknown as Agent
+    expect(state.service.getSessionSquadOverride(session.id)).toBe('inherit')
     await state.service.setProjectDefault('/workspace/project', squadId)
     expect(state.service.getEffectiveSessionSquadMode(session)).toMatchObject({ squadId, squadName: 'Delivery' })
 
     await state.service.setSessionSquadMode(session.id)
+    expect(state.service.getSessionSquadOverride(session.id)).toBe('disabled')
     expect(state.service.getEffectiveSessionSquadMode(session)).toBeUndefined()
+
+    await state.service.setSessionSquadMode(session.id, squadId)
+    expect(state.service.getSessionSquadOverride(session.id)).toBe('enabled')
   })
 
   it('never inherits project squad mode into a delegated child session', async () => {

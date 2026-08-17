@@ -181,10 +181,24 @@ interface ModeValue {
 
 interface ModeResponse {
   mode: ModeValue | null
+  /** Durable explicit choice; `inherit` may still need a restored Session. */
+  sessionOverride?: 'enabled' | 'disabled' | 'inherit'
   /** False while the restored conversation Agent is not live yet. */
   sessionReady?: boolean
   projectKey?: string | null
   projectDefault?: { projectKey: string; squadId: string; enabled: boolean } | null
+}
+
+/** Whether a mode response is final without waiting for Session/project hydration. */
+export function isAuthoritativeModeResponse(response: {
+  mode: unknown | null
+  sessionOverride?: 'enabled' | 'disabled' | 'inherit'
+  sessionReady?: boolean
+}): boolean {
+  return response.sessionReady !== false
+    || response.sessionOverride === 'enabled'
+    || response.sessionOverride === 'disabled'
+    || response.mode !== null
 }
 
 interface TokenUsageView {
@@ -281,18 +295,21 @@ export function TeamComposerControl({ controller, sessionId, input }: ComposerPr
         // With no restored Session, `mode:null` cannot distinguish an explicit
         // Solo choice from a project default that has not hydrated yet. Keep
         // the last trustworthy UI state until the Host can answer completely.
-        if (response.sessionReady !== false || response.mode !== null) {
+        const authoritative = isAuthoritativeModeResponse(response)
+        if (authoritative) {
           setEnabled(response.mode !== null)
           setSelected(response.mode?.squadId ?? '')
           setProjectKey(response.projectKey ?? null)
           setProjectDefault(response.projectDefault?.squadId ?? null)
         }
-        if (response.sessionReady === false && attempt < retryDelays.length) {
-          if (response.mode !== null) complete()
+        // Any successful read unlocks the controls. Only an unresolved
+        // inherited project default needs a background retry; explicit Solo
+        // and explicit Team are already durable, authoritative answers.
+        complete()
+        if (!authoritative && attempt < retryDelays.length) {
           timer = setTimeout(() => { readMode(attempt + 1) }, retryDelays[attempt])
           return
         }
-        complete()
       }, (reason: unknown) => {
         if (request !== requestRef.current) return
         if (attempt < retryDelays.length) {

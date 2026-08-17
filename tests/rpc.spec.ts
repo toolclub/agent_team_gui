@@ -180,6 +180,15 @@ describe('agent team RPC handler', () => {
     const state = await populate()
     const handler = createAgentTeamRpcHandler(state.ctx, state.service)
 
+    await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
+      .resolves.toEqual({ ok: true, value: {
+        mode: null,
+        sessionOverride: 'inherit',
+        sessionReady: false,
+        projectKey: null,
+        projectDefault: null,
+      } })
+
     const enabled = await call<{ mode: { sessionId: string; squadId: string; squadName: string } | null }>(
       handler, 'mode/set', { sessionId: 'conversation', squadId }, signal(),
     )
@@ -189,12 +198,21 @@ describe('agent team RPC handler', () => {
     await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
       .resolves.toEqual({ ok: true, value: {
         mode: { sessionId: 'conversation', squadId, squadName: 'Delivery' },
+        sessionOverride: 'enabled',
         sessionReady: false,
         projectKey: null,
         projectDefault: null,
       } })
     await expect(call(handler, 'mode/set', { sessionId: 'conversation', squadId: null }, signal()))
       .resolves.toEqual({ ok: true, value: { mode: null } })
+    await expect(call(handler, 'mode/get', { sessionId: 'conversation' }, signal()))
+      .resolves.toEqual({ ok: true, value: {
+        mode: null,
+        sessionOverride: 'disabled',
+        sessionReady: false,
+        projectKey: null,
+        projectDefault: null,
+      } })
   })
 
   it('restores a project default from the Session before its Agent is live', async () => {
@@ -212,6 +230,7 @@ describe('agent team RPC handler', () => {
       ok: true,
       value: {
         mode: { sessionId, squadId, squadName: 'Delivery' },
+        sessionOverride: 'inherit',
         sessionReady: true,
         projectKey: '/workspace/project',
         projectDefault: { projectKey: '/workspace/project', squadId, enabled: true },
@@ -262,6 +281,7 @@ describe('agent team RPC handler', () => {
       ok: true,
       value: {
         mode: { sessionId: state.parent.id, squadId, squadName: 'Delivery v2' },
+        sessionOverride: 'inherit',
         sessionReady: true,
         projectKey: '/workspace/project',
         projectDefault: { projectKey: '/workspace/project', squadId, enabled: true },

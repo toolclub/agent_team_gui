@@ -430,6 +430,13 @@ export class AgentTeamService extends Service {
     return { sessionId, squadId: mode.squadId, squadName: squad.name }
   }
 
+  /** Durable per-session override, distinct from an inherited project default. */
+  getSessionSquadOverride(sessionId: SessionId): 'enabled' | 'disabled' | 'inherit' {
+    const mode = this.sessionModes().get(sessionId)
+    if (mode === undefined) return 'inherit'
+    return mode.disabled === true || mode.squadId === undefined ? 'disabled' : 'enabled'
+  }
+
   /** Enable a squad for normal conversation, or disable it when squadId is omitted. */
   async setSessionSquadMode(sessionId: SessionId, squadId?: SquadId): Promise<SessionSquadModeView | undefined> {
     if (squadId === undefined) {
