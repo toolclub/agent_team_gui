@@ -15,7 +15,7 @@
 ## 60 秒安装
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.0
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.1
 dsh --profile web
 ```
 
@@ -26,7 +26,7 @@ dsh 已配置的模型路由和凭据存储，绝不会保存 API key。
 | --- | --- |
 | 每个 Agent 独立的 provider/model 与工具策略 | 一个小队可组合强规划、快实现和严审核模型 |
 | 全局持久化的 Agent 与小队 | 建一次队伍，即可跨项目、跨对话复用 |
-| 固定顺序或模型规划顺序 | 固化可重复流程，或让主模型针对每次任务安排角色 |
+| 固定顺序或主 Agent 动态编排 | 固化可重复流程，或让当前对话的主 Agent 为每次任务安排所有成员 |
 | 串行/并行执行与 spawn/fork/chain 上下文 | 按任务选择协作拓扑，不被单一模式限制 |
 | 实时运行中心与官方 token 用量 | 查看规划、输出、重试、失败，以及每个成员由 provider 上报的真实 token |
 
@@ -47,7 +47,7 @@ dsh 已配置的模型路由和凭据存储，绝不会保存 API key。
 小队不必共享同一个模型配置。每个 Agent 都能独立选择 dsh 中已有的 provider/model 路由、
 `maxTokens` 和工具 allow/deny 策略；这些 Agent 在 Settings 中保存为全局可复用定义，再组合为持久
 小队。每个对话可选择一个小队并开启协作；开启后，普通的“发送”就进入协作流程。小队可固定成员
-顺序；未固定时，由模型根据任务规划分工与执行顺序。
+顺序；未固定时，由主 Agent 根据成员特性，为每名已配置成员生成专属分工与执行顺序。
 
 ## 状态与架构
 
@@ -58,7 +58,7 @@ Settings --> 全局 Agent/小队定义 ---------+
 对话小队选择器 + 协作 toggle
                                            |
 普通发送 --> 已设置固定成员顺序 -----------+
-        `-> 未设置顺序时由模型规划分工/顺序
+        `-> 未设置顺序时由主 Agent 编排所有成员
                                            |
                  Agent A / Agent B / Agent C
                                            |
@@ -78,8 +78,9 @@ Settings --> 全局 Agent/小队定义 ---------+
 - Settings 提供 CRUD、快速模板、安全的合并/替换导入预览、复制、版本恢复和模型路由检查。
 - 每个对话独立选择小队并显式开关。默认的**可靠自动运行**会在主模型回答前由 Host 边界执行
   小队，不再依赖模型自行决定是否调用工具；仍保留兼容的“模型按需调用”模式。
-- 小队可固定成员顺序；未固定时可指定规划队长，为每次请求生成完整分工与顺序，规划无效时安全
-  回退到已配置顺序。
+- 小队可固定成员顺序；未固定时，默认由当前对话的主 Agent 为每名已配置成员生成符合其角色的
+  专属分工与完整顺序。规划无效时，会安全回退成每名成员各自不同的角色限定任务。可选规划队长
+  仅作为手动派单等缺少主对话上下文时的备用方案。
 - 每个 Agent 独立的主/回退 `{ provider, model, maxTokens? }` 路由与可视化工具权限；不存 API key。
 - 模型可调用 `dispatch_to_squad`，可选显式指定每个 Agent 的任务。
 - 支持串行/有界并行、`spawn`/`fork`/串行专用 `chain`，以及成员超时、继续/停止/重试一次、
@@ -170,13 +171,13 @@ pnpm dsh --version
    pnpm --dir ./dsh-agent-team-gui pack
    ```
 
-   预期：pnpm 打印生成的归档文件名，通常是 `dsh-agent-team-gui-0.4.0.tgz`。下一步请使用你的
+   预期：pnpm 打印生成的归档文件名，通常是 `dsh-agent-team-gui-0.4.1.tgz`。下一步请使用你的
    pnpm 版本实际打印的完整路径。
 
 3. 安装该归档：
 
    ```sh
-   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.0.tgz
+   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.1.tgz
    ```
 
    预期：pnpm 报告已加入 `dsh-agent-team-gui`，且没有 `allowBuilds` 提示。若 `pack` 把归档写到
@@ -297,14 +298,15 @@ Agent 记录字段：
 | `name` | 是 | Settings 与对话选择器使用的全局显示名称。 |
 | `members` | 是 | 小队可用且不重复的 Agent ID。 |
 | `collabNote` | 否 | 加入成员 prompt 的协作说明。 |
-| `executionOrder` | 否 | 包含全部成员的固定完整顺序；省略时由主模型规划。 |
+| `executionOrder` | 否 | 包含全部成员的固定完整顺序；省略时由主 Agent 动态编排。 |
 | `executionMode` | 否 | 小队默认值：`serial` 或 `parallel`；省略时回退到插件配置。 |
 | `contextMode` | 否 | 小队默认值：`spawn`、`fork` 或串行专用 `chain`；省略时回退到插件配置。 |
 
 小队记录包含 `name`、可选协作说明、成员列表、可选 `executionOrder`，以及可选的
 `executionMode`/`contextMode` 默认值。一个 Agent 可以属于多个小队。**Settings → 小队**通过仅
 loopback 可用的宿主 RPC 编辑这些全局记录。固定的 `executionOrder` 必须恰好包含所有成员且不重复；
-未固定时，主模型规划分工，并在派单时给出完整 `memberOrder`。插件只保存路由名称，不保存或复制
+未固定时，普通对话会复用父 Agent 的 provider/model 路由，为每名成员规划一份任务，并给出完整
+`memberOrder`。插件只保存路由名称，不保存或复制
 provider 密钥。
 
 ### 同进程 Service API
@@ -359,8 +361,9 @@ ID，也可以是小队准确名称（不区分大小写）；若名称重复，
 1. 启动 `dsh --profile web`，打开 **Settings → 小队**。
 2. 创建 Agent，从 dsh 已配置路由中选择主模型与可选回退模型；可设置 max tokens 与可视化工具
    权限。也可以从开发、审查、产品三个模板快速开始。
-3. 创建全局小队、勾选成员并可选固定成员顺序。未固定时可指定规划队长，为每次请求生成分工和
-   顺序；还可配置串/并行上下文、重试/停止、超时、并发数与 token 软预算。
+3. 创建全局小队、勾选成员并可选固定成员顺序。未固定时，主 Agent 默认会为每次请求生成分工和
+   顺序；备用规划队长只用于手动派单等路径。还可配置串/并行上下文、重试/停止、超时、并发数
+   与 token 软预算。
 4. 打开任意对话，在小队选择器中选择**发布审查小队**，并开启小队协作。
 5. 在普通输入框填写任务后点击**发送**。关闭开关后，该对话恢复普通单 Agent 发送。
 
@@ -399,7 +402,9 @@ assistant 回复。即使编排本身失败，主模型也不会被卡死，而�
 每次执行都会在规划前创建持久运行记录。**小队运行**页面展示计划、实时成员状态、完整文本输出、
 尝试次数、错误、耗时和 provider 拥有的 child/run ID；活动运行可以取消。Token 数据直接复用 dsh
 官方 `tokenUsage` session projection，分别保留非缓存输入、缓存读取、缓存写入与输出。Harness 当前
-没有稳定的 provider 价格表，所以插件只报告真实 token，不伪造金额。模型工具路径仍会把完整
+没有稳定的 provider 价格表，所以插件只报告真实 token，不伪造金额。provider 尚未上报首个
+usage sample 时，界面显示“统计中…”，不再用 0 token 误导用户。小队子会话受 lineage 防护，
+既不能再次派发小队，也不能递归创建子代理树。模型工具路径仍会把完整
 canonical JSON 保存在标准持久化 `tool/result` 文本中。宿主日志记录成员生命周期；Cordis 负责
 监听器/工具清理，插件卸载时关闭 storage domain。
 

@@ -1,6 +1,6 @@
 {
   "name": "dsh-agent-team-gui",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Persistent multi-model squads for DeepSeek Harness with guaranteed orchestration, live runs, and token cost monitoring",
   "type": "module",
   "main": "lib/index.js",

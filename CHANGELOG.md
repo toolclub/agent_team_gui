@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.4.1 — 2026-08-17
+
+- Prevent recursive squad explosions by excluding delegated sessions from automatic mode, denying
+  team/subagent tools inside members, and rejecting nested dispatches at the service boundary.
+- Dispatch only the latest user message and deduplicate guaranteed dispatch by session/message trace.
+- Stream official `tokenUsage` projection changes into active run/member rows, subtract fork seed
+  usage, and show **Metering…** until a provider reports instead of displaying a false zero.
+- Make the parent conversation's Main Agent the default dynamic workflow planner: it assigns every
+  configured member exactly once according to role/model/tool capabilities, while fixed order remains
+  an explicit override and planning failures fall back to differentiated role-scoped assignments.
+
 ## 0.4.0 — 2026-08-17
 
 - Run the selected squad reliably from the host `agent/pre-step` path before the lead model answers.

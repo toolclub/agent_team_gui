@@ -128,11 +128,15 @@ export interface AgentTokenUsage {
   readonly providerReported: boolean
 }
 
-/** Optional automatic plan produced by the squad leader. */
+/** Automatic division of work produced before squad members start. */
 export interface SquadExecutionPlan {
   readonly summary: string
   readonly memberOrder: AgentId[]
   readonly assignments: SquadAssignment[]
+  /** Normal conversation sends are planned with the parent Agent's model route. */
+  readonly planner: 'main-agent' | 'squad-leader'
+  readonly plannerProvider?: string
+  readonly plannerModel?: string
   readonly leaderAgentId?: AgentId
   readonly usage?: AgentTokenUsage
   readonly warning?: string

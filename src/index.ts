@@ -83,6 +83,12 @@ interface SystemPromptService {
 
 interface SessionProjectionService {
   snapshot(session: Agent['session']): { readonly values: Record<string, unknown> }
+  onChanged?(listener: (
+    session: Agent['session'],
+    key: string,
+    value: unknown,
+    seq: number,
+  ) => void): () => void
 }
 
 interface TokenUsageProjection {
@@ -118,6 +124,8 @@ export class AgentTeamService extends Service {
   private squadVersionsTable?: KvTable<string, SquadVersionRecord>
   private projectDefaultsTable?: KvTable<string, ProjectSquadDefaultRecord>
   private readonly activeRunControllers = new Map<DispatchId, AbortController>()
+  /** Process-local first gate; weak agent keys avoid retaining closed sessions. */
+  private readonly lastGuaranteedMessage = new WeakMap<Agent, string>()
 
   constructor(ctx: Context, private readonly config: Config) {
     super(ctx, 'agentTeamGui')
@@ -142,7 +150,11 @@ export class AgentTeamService extends Service {
     this.ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
       const decision = await next()
       if (decision.kind === 'reject') return decision
-      const submitted = decision.messages.find((message): message is UserMessage => message.source.kind === 'user')
+      // Squad children inherit the parent's cwd. Without this lineage gate a
+      // project default recursively dispatches the same squad from every child.
+      if (this.isDelegatedAgent(agent)) return decision
+      const submitted = [...decision.messages].reverse()
+        .find((message): message is UserMessage => message.source.kind === 'user')
       if (submitted === undefined) return decision
       const mode = this.getEffectiveSessionSquadMode(agent)
       if (mode === undefined) return decision
@@ -150,6 +162,7 @@ export class AgentTeamService extends Service {
       if (squad === undefined || (squad.triggerMode ?? 'guaranteed') !== 'guaranteed') return decision
       const task = this.messageText(submitted)
       if (task.trim() === '') return decision
+      if (!this.claimGuaranteedMessage(agent, submitted.id)) return decision
       let result: SquadDispatchResult
       try {
         result = await this.dispatch({ squadId: mode.squadId, task }, agent, signal, {
@@ -438,6 +451,7 @@ export class AgentTeamService extends Service {
 
   /** Resolve explicit session state first, then a durable workspace default. */
   getEffectiveSessionSquadMode(agent: Agent): SessionSquadModeView | undefined {
+    if (this.isDelegatedAgent(agent)) return undefined
     const explicit = this.sessionModes().get(agent.id)
     if (explicit !== undefined) return this.getSessionSquadMode(agent.id)
     const projectKey = this.projectKeyFor(agent)
@@ -446,6 +460,23 @@ export class AgentTeamService extends Service {
     if (project === undefined || !project.enabled) return undefined
     const squad = this.squads().get(project.squadId)
     return squad === undefined ? undefined : { sessionId: agent.id, squadId: project.squadId, squadName: squad.name }
+  }
+
+  /** Durable lineage is the authority: squad members can never auto-dispatch another squad. */
+  private isDelegatedAgent(agent: Agent): boolean {
+    const header = agent.session.header
+    return header.origin === 'subagent'
+      || header.parentSession !== undefined
+      || (header.delegationDepth ?? 0) > 0
+  }
+
+  /** Claim one top-level user message exactly once, including across restarts. */
+  private claimGuaranteedMessage(agent: Agent, messageId: string): boolean {
+    const alreadyDurable = [...this.runs().entries()].some(([, run]) =>
+      run.sessionId === agent.id && run.sourceMessageId === messageId)
+    if (this.lastGuaranteedMessage.get(agent) === messageId || alreadyDurable) return false
+    this.lastGuaranteedMessage.set(agent, messageId)
+    return true
   }
 
   getProjectDefault(projectKey: string): ProjectSquadDefaultRecord | undefined {
@@ -468,8 +499,8 @@ export class AgentTeamService extends Service {
 
   /**
    * Dynamic official system-prompt section for a live parent Agent. Harness
-   * currently exposes no tool-choice control, so this is an instruction seam:
-   * the main model remains responsible for calling the tool and synthesizing.
+   * uses it to teach the main model how to synthesize the guaranteed host run
+   * and, in legacy model-tool mode, how to call the explicit dispatch tool.
    */
   squadModeGuidance(agent: Agent | undefined): string {
     if (agent === undefined) return ''
@@ -478,7 +509,7 @@ export class AgentTeamService extends Service {
     const squad = this.squads().get(mode.squadId)
     if (squad === undefined) return ''
     const order = squad.executionOrder === undefined
-      ? 'No fixed member order is configured. Choose a complete memberOrder based on the user request.'
+      ? 'No fixed member order is configured. The host uses your model route to plan one role-specific assignment and a complete memberOrder for every configured member.'
       : `Use this fixed serial member order: ${squad.executionOrder.join(' -> ')}.`
     const executionMode = squad.executionMode ?? (squad.executionOrder === undefined
       ? this.config.defaultExecutionMode
@@ -696,8 +727,11 @@ export class AgentTeamService extends Service {
 
   private promptFor(squad: SquadRecord, member: ResolvedMember, sharedTask: string, chainText: string): string {
     const parts = [
-      `Squad task:\n${sharedTask}`,
-      ...member.task.length === 0 ? [] : [`Your assigned part:\n${member.task}`],
+      `Overall squad goal (context only):\n${sharedTask}`,
+      member.task.length === 0
+        ? 'Contribute only through your configured squad role. Do not take ownership of the other members\' work.'
+        : `Your exclusive assignment:\n${member.task}\n\nComplete this assignment only. Do not perform or replace another member's assignment.`,
+      'Do not call dispatch_to_squad and do not create or delegate to subagents. Return a concrete handoff for the main Agent to synthesize.',
       ...(squad.collabNote ?? '').length === 0 ? [] : [`Squad collaboration note:\n${squad.collabNote}`],
       ...chainText.length === 0 ? [] : [`Previous squad member result:\n${chainText}`],
     ]
@@ -746,7 +780,7 @@ export class AgentTeamService extends Service {
     }
   }
 
-  private usageFor(run: SubagentRun): AgentTokenUsage | undefined {
+  private usageProjectionFor(run: SubagentRun): TokenUsageProjection | undefined {
     if (run.localAgent === undefined) return undefined
     try {
       const projections = this.ctx.get('sessionProjections') as SessionProjectionService
@@ -763,13 +797,42 @@ export class AgentTeamService extends Service {
         outputTokens,
         cacheReadTokens,
         cacheWriteTokens,
-        totalTokens: uncachedInputTokens + outputTokens + cacheReadTokens + cacheWriteTokens,
-        providerReported: true,
       }
     } catch (error: unknown) {
       this.ctx.logger.warn(`[agent-team-gui] official tokenUsage read failed: ${this.errorText(error)}`)
       return undefined
     }
+  }
+
+  /** Provider-reported usage for this run only, excluding a fork seed baseline. */
+  private usageFor(run: SubagentRun, baseline?: TokenUsageProjection): AgentTokenUsage | undefined {
+    const current = this.usageProjectionFor(run)
+    if (current === undefined) return undefined
+    const buckets = {
+      uncachedInputTokens: Math.max(0, current.uncachedInputTokens - (baseline?.uncachedInputTokens ?? 0)),
+      outputTokens: Math.max(0, current.outputTokens - (baseline?.outputTokens ?? 0)),
+      cacheReadTokens: Math.max(0, current.cacheReadTokens - (baseline?.cacheReadTokens ?? 0)),
+      cacheWriteTokens: Math.max(0, current.cacheWriteTokens - (baseline?.cacheWriteTokens ?? 0)),
+    }
+    const totalTokens = buckets.uncachedInputTokens + buckets.outputTokens
+      + buckets.cacheReadTokens + buckets.cacheWriteTokens
+    // The official projection initializes at zero before a provider reports.
+    // Absence is more accurate than presenting that state as "0 tokens".
+    if (totalTokens === 0) return undefined
+    return { ...buckets, totalTokens, providerReported: true }
+  }
+
+  /** Fork children begin with parent history; spawn children have no seed to subtract. */
+  private usageBaselineFor(run: SubagentRun): TokenUsageProjection | undefined {
+    if (run.localAgent === undefined) return undefined
+    // Third-party providers are required to return a complete Agent, but keep
+    // metering defensive so a malformed optional local handle cannot fail work.
+    try {
+      if ((run.localAgent.session.header.seedLength ?? 0) === 0) return undefined
+    } catch {
+      return undefined
+    }
+    return this.usageProjectionFor(run)
   }
 
   private async updateRun(id: DispatchId, update: (record: SquadRunRecord) => SquadRunRecord): Promise<void> {
@@ -781,13 +844,63 @@ export class AgentTeamService extends Service {
     agentId: AgentId,
     update: (record: SquadRunMember) => SquadRunMember,
   ): Promise<void> {
-    await this.updateRun(dispatchId, run => ({
-      ...run,
-      members: run.members.map(member => member.agentId === agentId ? update(member) : member),
-    }))
+    await this.updateRun(dispatchId, run => {
+      const members = run.members.map(member => member.agentId === agentId ? update(member) : member)
+      return {
+        ...run,
+        members,
+        usage: this.addUsage(run.plan?.usage, ...members.map(member => member.usage)),
+      }
+    })
   }
 
-  private async settleRun(member: ResolvedMember, run: SubagentRun, attempts: number, startedAt: number): Promise<SquadMemberResult> {
+  /** Stream official token projection changes into the durable live run row. */
+  private trackRunUsage(
+    dispatchId: DispatchId,
+    agentId: AgentId,
+    run: SubagentRun,
+    baseline: TokenUsageProjection | undefined,
+  ): () => Promise<void> {
+    if (run.localAgent === undefined) return async () => undefined
+    let projections: SessionProjectionService
+    try {
+      projections = this.ctx.get('sessionProjections') as SessionProjectionService
+    } catch {
+      return async () => undefined
+    }
+    if (projections === undefined || projections.onChanged === undefined) return async () => undefined
+    let lastSignature = ''
+    let pending = Promise.resolve()
+    const publish = (): void => {
+      const usage = this.usageFor(run, baseline)
+      if (usage === undefined) return
+      const signature = `${usage.uncachedInputTokens}/${usage.outputTokens}/${usage.cacheReadTokens}/${usage.cacheWriteTokens}`
+      if (signature === lastSignature) return
+      lastSignature = signature
+      pending = pending.then(async () => {
+        await this.updateRunMember(dispatchId, agentId, member => ({ ...member, usage }))
+      }).catch((error: unknown) => {
+        this.ctx.logger.warn(`[agent-team-gui] live token update failed: ${this.errorText(error)}`)
+      })
+    }
+    const dispose = projections.onChanged((session, key) => {
+      if (session === run.localAgent?.session && key === 'tokenUsage') publish()
+    })
+    publish()
+    return async () => {
+      dispose()
+      publish()
+      await pending
+    }
+  }
+
+  private async settleRun(
+    member: ResolvedMember,
+    run: SubagentRun,
+    attempts: number,
+    startedAt: number,
+    baseline?: TokenUsageProjection,
+  ): Promise<SquadMemberResult> {
     let result: SubagentResult | undefined
     let executionError: unknown
     try {
@@ -795,7 +908,7 @@ export class AgentTeamService extends Service {
     } catch (error: unknown) {
       executionError = error
     }
-    const usage = this.usageFor(run)
+    const usage = this.usageFor(run, baseline)
     let disposalError: unknown
     try {
       await run.dispose()
@@ -853,6 +966,7 @@ export class AgentTeamService extends Service {
       ? undefined
       : setTimeout(() => timeout.abort(new Error(`member timed out after ${squad.memberTimeoutMs}ms`)), squad.memberTimeoutMs)
     const memberSignal = squad.memberTimeoutMs === undefined ? signal : AbortSignal.any([signal, timeout.signal])
+    const childToolScope = this.childToolScope(member.record, provider)
     try {
       const run = await this.ctx.subagents.start(provider, {
         label: `${squad.name}/${member.record.name}`,
@@ -864,10 +978,17 @@ export class AgentTeamService extends Service {
           model: selectedRoute.model,
           ...member.record.maxTokens === undefined ? {} : { maxTokens: member.record.maxTokens },
         },
-        ...member.record.toolScope === undefined ? {} : { toolFilter: member.record.toolScope },
+        ...childToolScope === undefined ? {} : { toolFilter: childToolScope },
         ...member.record.systemPrompt.length === 0 ? {} : { persona: member.record.systemPrompt },
       })
-      const settled = await this.settleRun(member, run, attempt, startedAt)
+      const baseline = this.usageBaselineFor(run)
+      const stopUsageTracking = this.trackRunUsage(dispatchId, member.id, run, baseline)
+      let settled: SquadMemberResult
+      try {
+        settled = await this.settleRun(member, run, attempt, startedAt, baseline)
+      } finally {
+        await stopUsageTracking()
+      }
       await this.updateRunMember(dispatchId, member.id, current => ({
         ...current,
         status: settled.status,
@@ -908,6 +1029,25 @@ export class AgentTeamService extends Service {
     }
   }
 
+  /** Preserve configured restrictions while hard-denying recursive team/delegation tools when present. */
+  private childToolScope(record: AgentRecord, provider: string): AgentRecord['toolScope'] | undefined {
+    const runtime = this.ctx.subagents as unknown as {
+      getProvider?(name: string): { readonly capabilities: { readonly toolFilter: boolean } } | undefined
+    }
+    if (runtime.getProvider?.(provider)?.capabilities.toolFilter === false) return record.toolScope
+    const known = new Set(this.ctx.tools.schemas().map(tool => tool.name))
+    const deny = new Set(record.toolScope?.deny ?? [])
+    for (const name of ['dispatch_to_squad', 'subagent']) {
+      if (known.has(name)) deny.add(name)
+    }
+    const allow = record.toolScope?.allow
+    if (allow === undefined && deny.size === 0) return undefined
+    return {
+      ...(allow === undefined ? {} : { allow: [...allow] }),
+      ...(deny.size === 0 ? {} : { deny: [...deny] }),
+    }
+  }
+
   private async runMemberWithPolicy(
     provider: string,
     squad: SquadRecord,
@@ -943,11 +1083,25 @@ export class AgentTeamService extends Service {
     task: string,
     parent: Agent,
     signal: AbortSignal,
+    useMainAgent: boolean,
   ): Promise<SquadExecutionPlan | undefined> {
-    if (squad.executionOrder !== undefined || squad.leaderAgentId === undefined) return undefined
-    const leader = this.agents().get(squad.leaderAgentId)
-    if (leader === undefined) return undefined
-    const provider = squad.contextMode === 'fork' ? 'fork' : this.config.defaultProvider
+    if (squad.executionOrder !== undefined) return undefined
+    const leader = squad.leaderAgentId === undefined ? undefined : this.agents().get(squad.leaderAgentId)
+    if (!useMainAgent && leader === undefined) return undefined
+    // A forked planning child inherits the parent Agent's conversation and,
+    // unless explicitly overridden, the same provider/model route. It has no
+    // execution tools and exists only to enforce a structured plan contract.
+    const provider = useMainAgent ? 'fork' : (squad.contextMode === 'fork' ? 'fork' : this.config.defaultProvider)
+    const planner = useMainAgent ? 'main-agent' as const : 'squad-leader' as const
+    const plannerProvider = useMainAgent ? parent.options.provider : leader?.provider
+    const plannerModel = useMainAgent ? parent.options.model : leader?.model
+    const plannerAgentOptions = {
+      ...(plannerProvider === undefined ? {} : { provider: plannerProvider }),
+      ...(plannerModel === undefined ? {} : { model: plannerModel }),
+      ...(useMainAgent
+        ? (parent.options.maxTokens === undefined ? {} : { maxTokens: parent.options.maxTokens })
+        : (leader?.maxTokens === undefined ? {} : { maxTokens: leader.maxTokens })),
+    }
     const memberIds = squad.members.map(String)
     const outputSchema = {
       type: 'object' as const,
@@ -968,30 +1122,48 @@ export class AgentTeamService extends Service {
       required: ['summary', 'memberOrder', 'assignments'],
     }
     let run: SubagentRun | undefined
+    let baseline: TokenUsageProjection | undefined
+    const runtime = this.ctx.subagents as unknown as {
+      getProvider?(name: string): { readonly capabilities: { readonly toolFilter: boolean } } | undefined
+    }
+    const plannerToolScope = runtime.getProvider?.(provider)?.capabilities.toolFilter === false
+      ? undefined
+      : { allow: [] as string[] }
     try {
       run = await this.ctx.subagents.start(provider, {
-        label: `${squad.name}/Planner`,
+        label: `${squad.name}/${useMainAgent ? 'Main workflow planner' : 'Squad leader planner'}`,
         parent,
         signal,
         prompt: [{ type: 'text', text: [
-          `Plan this squad task without doing the task yourself:\n${task}`,
-          `Members: ${squad.members.map((id) => {
+          `Create an execution plan for this user request. Do not do the work yourself:\n${task}`,
+          `You must use all ${squad.members.length} configured members exactly once. Their stable identities and capabilities are:\n${squad.members.map((id) => {
             const record = this.agents().get(id)
-            return `${id}: ${record?.name ?? 'missing'} — ${record?.systemPrompt ?? ''}`
+            const allow = record?.toolScope?.allow?.join(', ') ?? 'all tools except denied tools'
+            const deny = record?.toolScope?.deny?.join(', ') ?? 'none configured'
+            return [
+              `- id=${id}; name=${record?.name ?? 'missing'}; model=${record?.provider ?? 'missing'}/${record?.model ?? 'missing'}`,
+              `  role=${record?.systemPrompt?.trim() || 'No role description configured.'}`,
+              `  tools: allow=${allow}; deny=${deny}`,
+            ].join('\n')
           }).join('\n')}`,
-          'Return every member exactly once in memberOrder and one concrete assignment for every member.',
+          ...(squad.collabNote ?? '').trim().length === 0 ? [] : [`Team collaboration rule:\n${squad.collabNote}`],
+          [
+            'Return every member exactly once in memberOrder and exactly one non-empty, concrete assignment for every member.',
+            'Match each assignment to that member\'s role and capabilities. Split ownership so members do not all solve the entire request.',
+            'Order dependencies deliberately: for example, design/research before implementation and review after the artifact exists.',
+            'The main Agent will synthesize the member handoffs, so assignments should name the expected deliverable and boundaries.',
+          ].join(' '),
         ].join('\n\n') }],
         outputSchema,
-        agentOptions: {
-          provider: leader.provider,
-          model: leader.model,
-          ...leader.maxTokens === undefined ? {} : { maxTokens: leader.maxTokens },
-        },
-        ...leader.toolScope === undefined ? {} : { toolFilter: leader.toolScope },
-        persona: `${leader.systemPrompt}\nYou are the squad leader. Produce a concise executable division of work.`,
+        ...Object.keys(plannerAgentOptions).length === 0 ? {} : { agentOptions: plannerAgentOptions },
+        ...plannerToolScope === undefined ? {} : { toolFilter: plannerToolScope },
+        persona: useMainAgent
+          ? 'You are the main Agent\'s workflow planner. Produce only a concise, executable division of work. Do not execute the task, call tools, dispatch teams, or create subagents.'
+          : `${leader?.systemPrompt ?? ''}\nYou are the fallback squad leader planner. Produce only a concise executable division of work. Do not execute the task, call tools, dispatch teams, or create subagents.`,
       })
+      baseline = this.usageBaselineFor(run)
       const result = await run.result
-      const usage = this.usageFor(run)
+      const usage = this.usageFor(run, baseline)
       const structured = result.structured as { summary?: unknown; memberOrder?: unknown; assignments?: unknown } | undefined
       if (result.stopReason !== 'completed' || structured === undefined
         || typeof structured.summary !== 'string' || !Array.isArray(structured.memberOrder)
@@ -1003,8 +1175,10 @@ export class AgentTeamService extends Service {
       }
       const assignments = structured.assignments.map((raw) => {
         const value = raw as { agentId?: unknown; task?: unknown }
-        if (typeof value.agentId !== 'string' || typeof value.task !== 'string') throw new Error('planner assignment is invalid')
-        return { agentId: AgentId(value.agentId), task: value.task }
+        if (typeof value.agentId !== 'string' || typeof value.task !== 'string' || value.task.trim().length === 0) {
+          throw new Error('planner assignment is invalid or empty')
+        }
+        return { agentId: AgentId(value.agentId), task: value.task.trim() }
       })
       const assignmentIds = assignments.map(item => item.agentId)
       if (assignments.length !== squad.members.length || new Set(assignmentIds).size !== assignmentIds.length
@@ -1015,17 +1189,36 @@ export class AgentTeamService extends Service {
         summary: structured.summary,
         memberOrder: order,
         assignments,
-        leaderAgentId: squad.leaderAgentId,
+        planner,
+        ...(plannerProvider === undefined ? {} : { plannerProvider }),
+        ...(plannerModel === undefined ? {} : { plannerModel }),
+        ...planner === 'squad-leader' && squad.leaderAgentId !== undefined
+          ? { leaderAgentId: squad.leaderAgentId }
+          : {},
         ...usage === undefined ? {} : { usage },
       }
     } catch (error: unknown) {
+      const assignments = squad.members.map((agentId) => {
+        const record = this.agents().get(agentId)
+        const name = record?.name ?? String(agentId)
+        const role = record?.systemPrompt.trim() || `Act as ${name}.`
+        return {
+          agentId,
+          task: `Produce the ${name} contribution required for the squad goal. Stay strictly within this role: ${role} Deliver a focused handoff to the main Agent and do not take over other members' responsibilities.`,
+        }
+      })
       return {
-        summary: 'Automatic planning failed; using the configured member order and shared task.',
+        summary: 'Dynamic planning failed; using the configured member order with one role-scoped assignment per member.',
         memberOrder: [...squad.members],
-        assignments: [],
-        leaderAgentId: squad.leaderAgentId,
+        assignments,
+        planner,
+        ...(plannerProvider === undefined ? {} : { plannerProvider }),
+        ...(plannerModel === undefined ? {} : { plannerModel }),
+        ...planner === 'squad-leader' && squad.leaderAgentId !== undefined
+          ? { leaderAgentId: squad.leaderAgentId }
+          : {},
         warning: this.errorText(error),
-        ...run === undefined || this.usageFor(run) === undefined ? {} : { usage: this.usageFor(run)! },
+        ...run === undefined || this.usageFor(run, baseline) === undefined ? {} : { usage: this.usageFor(run, baseline)! },
       }
     } finally {
       if (run !== undefined) await run.dispose().catch(() => undefined)
@@ -1043,6 +1236,9 @@ export class AgentTeamService extends Service {
     signal: AbortSignal,
     trace: { readonly sessionId?: SessionId; readonly sourceMessageId?: string } = {},
   ): Promise<SquadDispatchResult> {
+    if (this.isDelegatedAgent(parent)) {
+      throw new AgentTeamError('nested squad dispatch is blocked for delegated child sessions', 'INVALID_DISPATCH')
+    }
     if (request.task.trim().length === 0) {
       throw new AgentTeamError('dispatch task must not be empty', 'INVALID_DISPATCH')
     }
@@ -1072,6 +1268,10 @@ export class AgentTeamService extends Service {
     const controller = new AbortController()
     this.activeRunControllers.set(dispatchId, controller)
     const runSignal = AbortSignal.any([signal, controller.signal])
+    const shouldPlan = squad.executionOrder === undefined
+      && request.memberOrder === undefined
+      && request.assignments === undefined
+      && (trace.sourceMessageId !== undefined || squad.leaderAgentId !== undefined)
     const initial: SquadRunRecord = {
       id: dispatchId,
       sessionId: trace.sessionId ?? parent.id,
@@ -1082,7 +1282,7 @@ export class AgentTeamService extends Service {
       task: request.task,
       executionMode,
       contextMode,
-      status: squad.executionOrder === undefined && squad.leaderAgentId !== undefined ? 'planning' : 'running',
+      status: shouldPlan ? 'planning' : 'running',
       startedAt,
       members: squad.members.map((id) => {
         const record = this.agents().get(id)
@@ -1099,8 +1299,8 @@ export class AgentTeamService extends Service {
       usage: { ...ZERO_USAGE },
     }
     await this.runs().put(dispatchId, initial)
-    const plan = request.memberOrder === undefined && request.assignments === undefined
-      ? await this.createAutomaticPlan(squad, request.task, parent, runSignal)
+    const plan = shouldPlan
+      ? await this.createAutomaticPlan(squad, request.task, parent, runSignal, trace.sourceMessageId !== undefined)
       : undefined
     await this.updateRun(dispatchId, run => ({
       ...run,

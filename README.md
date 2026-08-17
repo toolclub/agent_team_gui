@@ -15,7 +15,7 @@ squad beside the composer and keep chatting normally.
 ## 60-second install
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.0
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.4.1
 dsh --profile web
 ```
 
@@ -27,7 +27,7 @@ never stores API keys.
 | --- | --- |
 | One provider/model and tool policy per agent | Mix a strong planner, fast implementer, and strict reviewer in one squad |
 | Global persistent agents and squads | Build a team once, then reuse it across projects and conversations |
-| Fixed or model-planned execution order | Pin a repeatable workflow, or let the lead model plan roles for each task |
+| Fixed or Main-Agent-planned execution order | Pin a repeatable workflow, or let the conversation's Main Agent assign every member for each task |
 | Serial/parallel execution with spawn/fork/chain context | Match collaboration topology to the task instead of forcing one pattern |
 | Live run center plus official token usage | Inspect plans, outputs, retries, failures, and each member's real provider-reported tokens |
 
@@ -49,8 +49,8 @@ A squad does not have to share one model configuration. Every agent can independ
 existing dsh provider/model route, `maxTokens`, and tool allow/deny policy. Save those agents as
 global reusable definitions in Settings, combine them into persistent squads, and select a squad
 per conversation. When squad collaboration is enabled, an ordinary Send enters the collaboration
-flow: the squad follows its optional fixed member order, or lets the model plan assignments and
-execution order when no order is pinned.
+flow: the squad follows its optional fixed member order, or lets the Main Agent dynamically plan a
+role-specific assignment for every configured member and their execution order when no order is pinned.
 
 ## Status and architecture
 
@@ -61,7 +61,7 @@ Conversation --> per-session squad mode -------+--> dsh storage-domain --> JSON 
 Conversation squad selector + collaboration toggle
                                               |
 ordinary Send --> fixed member order, if set --+
-              `-> model-planned roles/order otherwise
+              `-> Main Agent plans every member otherwise
                                               |
                   Agent A / Agent B / Agent C
                                               |
@@ -85,8 +85,10 @@ Current capabilities:
 - Per-conversation selector and toggle. In the default **Guaranteed** mode, ordinary Send runs the
   squad at the host boundary before the lead model answers; it no longer depends on the model
   deciding to call a tool. A legacy model-tool mode remains available.
-- Optional fixed order; otherwise an optional planning lead produces the complete per-request member
-  order and assignments. Invalid plans safely fall back to the configured order.
+- Optional fixed order; otherwise the conversation's Main Agent is the default workflow planner and
+  produces a complete, role-specific assignment and order for every configured member. Invalid plans
+  safely fall back to one differentiated role-scoped assignment per member. The optional planning
+  lead is retained only as a fallback for manual dispatch paths without main-conversation context.
 - Per-agent primary and fallback `{ provider, model, maxTokens? }` routes plus visual tool
   allow/deny policies; no API-key storage.
 - Model-callable `dispatch_to_squad` with optional explicit per-agent assignments.
@@ -185,12 +187,12 @@ A built tarball contains compiled output and therefore needs no install-script a
    ```
 
    Expected: pnpm prints the generated archive name, normally
-   `dsh-agent-team-gui-0.4.0.tgz`. Use the exact path printed by your pnpm version below.
+   `dsh-agent-team-gui-0.4.1.tgz`. Use the exact path printed by your pnpm version below.
 
 3. Install that archive:
 
    ```sh
-   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.0.tgz
+   dsh plugin --profile web add -w ./dsh-agent-team-gui/dsh-agent-team-gui-0.4.1.tgz
    ```
 
    Expected: pnpm reports `dsh-agent-team-gui` as added without an `allowBuilds` prompt. If `pack`
@@ -314,15 +316,16 @@ Squad records contain:
 | `name` | yes | Global display name used by Settings and conversation selectors. |
 | `members` | yes | Unique agent IDs available to the squad. |
 | `collabNote` | no | Collaboration guidance included in member prompts. |
-| `executionOrder` | no | Fixed complete ordering of every member. Omit it for lead-model planning. |
+| `executionOrder` | no | Fixed complete ordering of every member. Omit it for Main Agent dynamic planning. |
 | `executionMode` | no | Squad default: `serial` or `parallel`; falls back to plugin config. |
 | `contextMode` | no | Squad default: `spawn`, `fork`, or serial-only `chain`; falls back to plugin config. |
 
 Squad records contain `name`, an optional collaboration note, a member list, optional
 `executionOrder`, and optional `executionMode`/`contextMode` defaults. An agent may appear in
 multiple squads. **Settings → Teams** edits these global records through a loopback-only host RPC.
-A fixed `executionOrder` must contain every member exactly once. With no fixed order, the lead model
-plans assignments and passes a complete `memberOrder` when dispatching. The plugin stores route
+A fixed `executionOrder` must contain every member exactly once. With no fixed order, normal
+conversation sends use the parent Agent's provider/model route to plan one assignment per member and
+a complete `memberOrder`. The plugin stores route
 names only; it does not store or copy provider secrets.
 
 ### In-process service API
@@ -382,7 +385,8 @@ summary.
    configured in dsh; optionally set max tokens and visual tool permissions. Or start from one of
    the development, review, and product templates.
 3. Create a global squad, select its members, and optionally pin a fixed member order. Without a
-   fixed order, select a planning lead to generate assignments and order for each request. Configure
+   fixed order, the Main Agent automatically generates assignments and order for each request. The
+   optional fallback planning lead is only for manual-dispatch paths. Configure
    serial/parallel context, retry/stop behavior, timeout, concurrency, and a soft token budget.
 4. Open any conversation, select **Release review** in its squad selector, and enable squad
    collaboration.
@@ -433,7 +437,9 @@ live member state, full text outputs, attempts, errors, duration, and provider-o
 active runs can be cancelled. Token totals reuse dsh's official `tokenUsage` session projection and
 keep uncached input, cache read, cache write, and output buckets separate. The plugin reports tokens
 instead of inventing currency amounts because Harness does not currently expose a stable provider
-price table. Model-tool calls also retain the complete canonical JSON in standard durable
+price table. Before a provider emits its first usage sample, the UI says **Metering…** rather than
+showing a misleading zero. Squad children are lineage-gated and cannot recursively dispatch another
+squad or subagent tree. Model-tool calls also retain the complete canonical JSON in standard durable
 `tool/result` text. The host log records member lifecycle. Cordis owns listener/tool cleanup, and
 the storage domain closes when the plugin unloads.
 

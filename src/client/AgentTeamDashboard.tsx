@@ -161,7 +161,15 @@ interface RunView {
   contextMode: 'spawn' | 'fork' | 'chain'
   members: RunMemberView[]
   usage: TokenUsageView
-  plan?: { summary: string; warning?: string }
+  plan?: {
+    summary: string
+    memberOrder: string[]
+    assignments: Array<{ agentId: string; task: string }>
+    planner: 'main-agent' | 'squad-leader'
+    plannerProvider?: string
+    plannerModel?: string
+    warning?: string
+  }
 }
 
 interface ComposerProps {
@@ -367,16 +375,20 @@ export function TeamRunCenter({ controller, sessionId }: RunCenterProps): ReactN
           <span className={`atg-status-dot status-${run.status}`} />
           <span className="atg-run-title"><strong>{run.squadName}</strong><small>{truncate(run.task, 92)}</small></span>
           <span className="atg-run-metric"><strong>{completed}/{run.members.length}</strong><small>{zh ? '成员' : 'members'}</small></span>
-          <span className="atg-run-metric"><strong>{formatTokens(run.usage.totalTokens)}</strong><small>tokens</small></span>
+          <span className="atg-run-metric"><strong>{run.usage.providerReported
+            ? formatTokens(run.usage.totalTokens)
+            : (run.status === 'planning' || run.status === 'running' ? (zh ? '统计中' : 'Metering') : '—')}</strong><small>tokens</small></span>
           <span className="atg-run-time">{formatDuration(run.startedAt, run.endedAt)}</span>
           <span>{open ? '⌃' : '⌄'}</span>
         </button>
         {open ? <div className="atg-run-detail">
-          <div className="atg-run-meta"><span>{run.executionMode === 'parallel' ? (zh ? '并行' : 'Parallel') : (zh ? '串行' : 'Serial')}</span><span>{contextLabel(run.contextMode, zh)}</span><span>{new Date(run.startedAt).toLocaleString()}</span>{run.plan ? <span>{zh ? '队长规划' : 'Leader planned'}</span> : null}</div>
-          {run.plan ? <div className={`atg-plan${run.plan.warning ? ' has-warning' : ''}`}><strong>{zh ? '执行计划' : 'Execution plan'}</strong><p>{run.plan.summary}</p>{run.plan.warning ? <small>{run.plan.warning}</small> : null}</div> : null}
+          <div className="atg-run-meta"><span>{run.executionMode === 'parallel' ? (zh ? '并行' : 'Parallel') : (zh ? '串行' : 'Serial')}</span><span>{contextLabel(run.contextMode, zh)}</span><span>{new Date(run.startedAt).toLocaleString()}</span>{run.plan ? <span>{run.plan.planner === 'main-agent' ? (zh ? '主 Agent 动态编排' : 'Main Agent planned') : (zh ? '备用队长规划' : 'Fallback lead planned')}</span> : null}</div>
+          {run.plan ? <div className={`atg-plan${run.plan.warning ? ' has-warning' : ''}`}><strong>{zh ? '执行计划' : 'Execution plan'}</strong><p>{run.plan.summary}</p>{run.plan.memberOrder.map((agentId, index) => { const assignment = run.plan?.assignments.find(item => item.agentId === agentId); return assignment === undefined ? null : <p key={agentId}><strong>{index + 1}. {run.members.find(member => member.agentId === agentId)?.agentName ?? agentId}</strong> — {assignment.task}</p> })}{run.plan.warning ? <small>{run.plan.warning}</small> : null}</div> : null}
           <div className="atg-token-grid"><TokenCell label={zh ? '非缓存输入' : 'Uncached input'} value={run.usage.uncachedInputTokens} /><TokenCell label={zh ? '缓存读取' : 'Cache read'} value={run.usage.cacheReadTokens} /><TokenCell label={zh ? '缓存写入' : 'Cache write'} value={run.usage.cacheWriteTokens} /><TokenCell label={zh ? '输出' : 'Output'} value={run.usage.outputTokens} /></div>
           <div className="atg-run-members">{run.members.map(member => <details key={member.agentId} className={`atg-run-member status-${member.status}`}>
-            <summary><span className={`atg-status-dot status-${member.status}`} /><span><strong>{member.agentName}</strong><small>{member.provider} / {member.model}</small></span><span>{statusLabel(member.status, zh)}</span><span>{formatTokens(member.usage?.totalTokens ?? 0)} tok</span><span>{member.attempts > 1 ? `×${member.attempts}` : ''}</span></summary>
+            <summary><span className={`atg-status-dot status-${member.status}`} /><span><strong>{member.agentName}</strong><small>{member.provider} / {member.model}</small></span><span>{statusLabel(member.status, zh)}</span><span>{member.usage === undefined
+              ? (member.status === 'running' ? (zh ? '统计中…' : 'Metering…') : '—')
+              : `${formatTokens(member.usage.totalTokens)} tok`}</span><span>{member.attempts > 1 ? `×${member.attempts}` : ''}</span></summary>
             <div className="atg-member-output">{member.error ? <div className="atg-alert">{member.error}</div> : null}<pre>{member.output.map(block => block.text ?? '').filter(Boolean).join('\n') || (zh ? '没有文本输出' : 'No text output')}</pre>{member.childId ? <small>child: {member.childId}</small> : null}</div>
           </details>)}</div>
           {(run.status === 'planning' || run.status === 'running') ? <div className="atg-actions"><button className="atg-button danger" onClick={() => { void cancel(run.id) }}>{zh ? '停止运行' : 'Stop run'}</button></div> : null}
@@ -393,7 +405,7 @@ export function TeamRunDock({ controller, sessionId }: RunCenterProps): ReactNod
   const live = runs.find(run => run.status === 'planning' || run.status === 'running')
   if (live === undefined) return null
   const done = live.members.filter(member => member.status === 'completed' || member.status === 'failed').length
-  return <div className="atg-run-dock"><span className="atg-live-pulse" /><strong>{live.squadName}</strong><span>{live.status === 'planning' ? (zh ? '正在规划…' : 'Planning…') : `${done}/${live.members.length} ${zh ? '名成员' : 'members'}`}</span><span>{formatTokens(live.usage.totalTokens)} tok</span></div>
+  return <div className="atg-run-dock"><span className="atg-live-pulse" /><strong>{live.squadName}</strong><span>{live.status === 'planning' ? (zh ? '正在规划…' : 'Planning…') : `${done}/${live.members.length} ${zh ? '名成员' : 'members'}`}</span><span>{live.usage.providerReported ? `${formatTokens(live.usage.totalTokens)} tok` : (zh ? 'token 统计中…' : 'Metering tokens…')}</span></div>
 }
 
 function TokenCell({ label, value }: { label: string; value: number }): ReactNode {
@@ -816,7 +828,7 @@ export function TeamSettingsPage({ controller }: SettingsProps): ReactNode {
                   executionOrder: normalizeOrder(current.members, current.executionOrder),
                 }))
               }} />
-              <span><strong>{zh ? '固定执行顺序' : 'Fixed execution order'}</strong><small>{zh ? '关闭时，由主模型根据任务自动拆解和编排。' : 'When off, the lead model plans the work automatically.'}</small></span>
+              <span><strong>{zh ? '固定执行顺序' : 'Fixed execution order'}</strong><small>{zh ? '关闭时，由主 Agent 根据成员特性自动拆解和编排。' : 'When off, the Main Agent plans every member from their configured role.'}</small></span>
             </label>
             {squad.fixedOrder ? (
               <ol className="atg-order-list">
@@ -831,7 +843,7 @@ export function TeamSettingsPage({ controller }: SettingsProps): ReactNode {
               <label className="atg-field"><span>{zh ? '上下文' : 'Context'}</span><select value={squad.contextMode ?? 'spawn'} onChange={event => { setSquad(current => ({ ...current, contextMode: event.currentTarget.value as 'spawn' | 'fork' | 'chain' })) }}><option value="spawn">Spawn</option><option value="fork">Fork</option><option value="chain" disabled={(squad.executionMode ?? 'serial') === 'parallel'}>Chain</option></select></label>
               <label className="atg-field"><span>{zh ? '触发方式' : 'Trigger'}</span><select value={squad.triggerMode} onChange={event => { setSquad(current => ({ ...current, triggerMode: event.currentTarget.value as 'guaranteed' | 'model-tool' })) }}><option value="guaranteed">{zh ? '可靠自动运行' : 'Guaranteed'}</option><option value="model-tool">{zh ? '模型按需调用' : 'Model tool'}</option></select></label>
             </div>
-            {!squad.fixedOrder ? <label className="atg-field"><span>{zh ? '规划队长（可选）' : 'Planning lead (optional)'}</span><select value={squad.leaderAgentId} onChange={event => { setSquad(current => ({ ...current, leaderAgentId: event.currentTarget.value })) }}><option value="">{zh ? '不指定，使用成员顺序' : 'None — use member order'}</option>{orderedMembers.map(id => { const member = catalog.data.agents.find(item => item.id === id); return <option key={id} value={id}>{member?.name ?? id}</option> })}</select></label> : null}
+            {!squad.fixedOrder ? <label className="atg-field"><span>{zh ? '备用规划队长（可选）' : 'Fallback planning lead (optional)'}</span><select value={squad.leaderAgentId} onChange={event => { setSquad(current => ({ ...current, leaderAgentId: event.currentTarget.value })) }}><option value="">{zh ? '不指定 — 普通对话默认由主 Agent 编排' : 'None — Main Agent plans normal sends'}</option>{orderedMembers.map(id => { const member = catalog.data.agents.find(item => item.id === id); return <option key={id} value={id}>{member?.name ?? id}</option> })}</select><small>{zh ? '仅供手动派单等没有主对话规划上下文的路径使用。' : 'Used only by manual dispatch paths without a main-conversation planning context.'}</small></label> : null}
             <details className="atg-details"><summary>{zh ? '可靠性、并发与 Token 预算' : 'Reliability, concurrency, and token budget'}</summary>
               <div className="atg-three"><label className="atg-field"><span>{zh ? '失败策略' : 'Failure policy'}</span><select value={squad.failurePolicy} onChange={event => { setSquad(current => ({ ...current, failurePolicy: event.currentTarget.value as 'continue' | 'stop' | 'retry-once' })) }}><option value="continue">{zh ? '继续其他成员' : 'Continue'}</option><option value="stop">{zh ? '立即停止' : 'Stop'}</option><option value="retry-once">{zh ? '回退模型重试一次' : 'Retry once'}</option></select></label><Field label={zh ? '最大并发' : 'Max concurrency'} value={squad.maxConcurrency} inputMode="numeric" placeholder={zh ? '默认：全部' : 'Default: all'} onChange={value => { setSquad(current => ({ ...current, maxConcurrency: value })) }} /><Field label={zh ? '成员超时 (ms)' : 'Member timeout (ms)'} value={squad.memberTimeoutMs} inputMode="numeric" placeholder="120000" onChange={value => { setSquad(current => ({ ...current, memberTimeoutMs: value })) }} /></div>
               <Field label={zh ? '本次小队 Token 软预算' : 'Team token soft budget'} value={squad.tokenBudget} inputMode="numeric" placeholder={zh ? '留空为不限制；达到后不再启动新成员' : 'Unlimited; stops starting new members after reached'} onChange={value => { setSquad(current => ({ ...current, tokenBudget: value })) }} />

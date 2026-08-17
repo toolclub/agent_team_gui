@@ -64,6 +64,7 @@ export interface FixtureOptions {
   readonly resolveModelInfo?: LlmRuntime['resolveModelInfo']
   /** Live-agent lookup for the RPC dispatch endpoint; defaults to no live sessions. */
   readonly agentsGet?: (sessionId: string) => unknown
+  readonly toolSchemas?: () => Array<{ readonly name: string; readonly description: string }>
 }
 
 export interface Fixture {
@@ -109,7 +110,7 @@ export function createService(options: FixtureOptions = {}): Fixture {
   ctx.provide('subagents', subagents)
   ctx.provide('llm', llm)
   ctx.provide('agents', { get: options.agentsGet ?? (() => undefined) })
-  ctx.provide('tools', { schemas: () => [{ name: 'read_file', description: 'Read a workspace file' }] })
+  ctx.provide('tools', { schemas: options.toolSchemas ?? (() => [{ name: 'read_file', description: 'Read a workspace file' }]) })
   const service = new AgentTeamService(ctx, {
     defaultProvider: 'spawn',
     defaultExecutionMode: 'serial',
@@ -129,7 +130,11 @@ export function createService(options: FixtureOptions = {}): Fixture {
     squadVersionsTable: versions,
     projectDefaultsTable: projectDefaults,
   })
-  const parent = { id: SessionId('parent'), session: { header: { cwd: '/workspace/project' } } } as unknown as Agent
+  const parent = {
+    id: SessionId('parent'),
+    options: { provider: 'main-provider', model: 'main-model', maxTokens: 32_000 },
+    session: { header: { cwd: '/workspace/project' } },
+  } as unknown as Agent
   return { ctx, service, agents, squads, modes, runs, versions, projectDefaults, starts, parent }
 }
 

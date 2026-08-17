@@ -124,6 +124,40 @@ describe('AgentTeamService CRUD', () => {
     expect(state.service.getEffectiveSessionSquadMode(session)).toBeUndefined()
   })
 
+  it('never inherits project squad mode into a delegated child session', async () => {
+    const state = await populate()
+    await state.service.setProjectDefault('/workspace/project', squadId)
+    const child = {
+      id: SessionId('delegated-child'),
+      session: { header: {
+        cwd: '/workspace/project',
+        parentSession: state.parent.id,
+        origin: 'subagent',
+        delegationDepth: 1,
+      } },
+    } as unknown as Agent
+
+    expect(state.service.getEffectiveSessionSquadMode(child)).toBeUndefined()
+    expect(state.service.squadModeGuidance(child)).toBe('')
+  })
+
+  it('claims each automatic user message once and honors durable run traces after restart', async () => {
+    const state = await populate()
+    const claim = (agentValue: Agent, messageId: string): boolean =>
+      (state.service as unknown as {
+        claimGuaranteedMessage(agent: Agent, id: string): boolean
+      }).claimGuaranteedMessage(agentValue, messageId)
+
+    expect(claim(state.parent, 'message-1')).toBe(true)
+    expect(claim(state.parent, 'message-1')).toBe(false)
+    await state.service.dispatch({ squadId, task: 'once' }, state.parent, new AbortController().signal, {
+      sessionId: state.parent.id,
+      sourceMessageId: 'durable-message',
+    })
+    const resumed = { id: state.parent.id, session: state.parent.session } as Agent
+    expect(claim(resumed, 'durable-message')).toBe(false)
+  })
+
   it('diagnoses every primary and fallback model route without mutating the team', async () => {
     const state = await populate()
     await state.service.updateAgent(researcherId, {
@@ -141,6 +175,166 @@ describe('AgentTeamService CRUD', () => {
 })
 
 describe('AgentTeamService dispatch', () => {
+  it('uses the parent Main Agent route to dynamically assign every configured member', async () => {
+    const requests: Array<{ provider: string; request: SubagentStartRequest }> = []
+    const state = createService({
+      start: async (provider, request) => {
+        requests.push({ provider, request })
+        const id = SessionId(`planned-child-${requests.length}`)
+        if (request.label === 'Delivery/Main workflow planner') {
+          return {
+            id,
+            localAgent: undefined,
+            result: Promise.resolve({
+              output: [],
+              structured: {
+                summary: 'Design, implement, then review.',
+                memberOrder: [researcherId, writerId, reviewerId],
+                assignments: [
+                  { agentId: researcherId, task: 'DESIGN-SCOPE: define the architecture and acceptance criteria.' },
+                  { agentId: writerId, task: 'IMPLEMENT-SCOPE: implement only the approved architecture.' },
+                  { agentId: reviewerId, task: 'REVIEW-SCOPE: audit the implementation against the criteria.' },
+                ],
+              },
+              stopReason: 'completed' as const,
+            }),
+            async dispose() {},
+          }
+        }
+        return {
+          id,
+          localAgent: undefined,
+          result: Promise.resolve({ output: [{ type: 'text' as const, text: request.label ?? '' }], stopReason: 'completed' as const }),
+          async dispose() {},
+        }
+      },
+    })
+    await state.agents.put(researcherId, { ...agent('Designer'), systemPrompt: 'Design the technical approach.' })
+    await state.agents.put(writerId, { ...agent('Implementer'), systemPrompt: 'Implement approved designs.' })
+    await state.agents.put(reviewerId, { ...agent('Reviewer'), systemPrompt: 'Review completed implementation.' })
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId, writerId, reviewerId] })
+
+    const result = await state.service.dispatch(
+      { squadId, task: 'Build a reliable feature' },
+      state.parent,
+      new AbortController().signal,
+      { sessionId: state.parent.id, sourceMessageId: 'main-plan-message' },
+    )
+
+    expect(requests.map(item => item.request.label)).toEqual([
+      'Delivery/Main workflow planner',
+      'Delivery/Designer',
+      'Delivery/Implementer',
+      'Delivery/Reviewer',
+    ])
+    expect(requests[0]).toMatchObject({
+      provider: 'fork',
+      request: {
+        agentOptions: { provider: 'main-provider', model: 'main-model', maxTokens: 32_000 },
+        toolFilter: { allow: [] },
+        outputSchema: { type: 'object' },
+      },
+    })
+    expect(requests[0]?.request.prompt[0]).toMatchObject({
+      type: 'text',
+      text: expect.stringMatching(/Designer[\s\S]*Implementer[\s\S]*Reviewer/),
+    })
+    expect(result.plan).toMatchObject({
+      planner: 'main-agent',
+      plannerProvider: 'main-provider',
+      plannerModel: 'main-model',
+      memberOrder: [researcherId, writerId, reviewerId],
+    })
+    const memberPrompts = requests.slice(1).map(item => (item.request.prompt[0] as { text: string }).text)
+    expect(memberPrompts[0]).toContain('DESIGN-SCOPE')
+    expect(memberPrompts[0]).not.toContain('IMPLEMENT-SCOPE')
+    expect(memberPrompts[1]).toContain('IMPLEMENT-SCOPE')
+    expect(memberPrompts[1]).not.toContain('REVIEW-SCOPE')
+    expect(memberPrompts[2]).toContain('REVIEW-SCOPE')
+    expect(memberPrompts[2]).toContain('Do not perform or replace another member')
+  })
+
+  it('falls back to a distinct role-scoped assignment for every member when planning fails', async () => {
+    const requests: SubagentStartRequest[] = []
+    const state = createService({
+      start: async (_provider, request) => {
+        requests.push(request)
+        const id = SessionId(`fallback-child-${requests.length}`)
+        return {
+          id,
+          localAgent: undefined,
+          result: Promise.resolve(request.label === 'Delivery/Main workflow planner'
+            ? {
+                output: [],
+                structured: { summary: 'incomplete', memberOrder: [researcherId], assignments: [] },
+                stopReason: 'completed' as const,
+              }
+            : { output: [{ type: 'text' as const, text: request.label ?? '' }], stopReason: 'completed' as const }),
+          async dispose() {},
+        }
+      },
+    })
+    await state.agents.put(researcherId, { ...agent('Designer'), systemPrompt: 'Design boundaries.' })
+    await state.agents.put(writerId, { ...agent('Implementer'), systemPrompt: 'Write production code.' })
+    await state.agents.put(reviewerId, { ...agent('Reviewer'), systemPrompt: 'Find correctness defects.' })
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId, writerId, reviewerId] })
+
+    const result = await state.service.dispatch(
+      { squadId, task: 'Build it' },
+      state.parent,
+      new AbortController().signal,
+      { sourceMessageId: 'fallback-plan-message' },
+    )
+
+    expect(result.plan).toMatchObject({ planner: 'main-agent', warning: expect.stringContaining('complete squad permutation') })
+    expect(result.plan?.assignments).toHaveLength(3)
+    expect(new Set(result.plan?.assignments.map(item => item.task)).size).toBe(3)
+    expect(result.plan?.assignments.map(item => item.task)).toEqual([
+      expect.stringContaining('Design boundaries.'),
+      expect.stringContaining('Write production code.'),
+      expect.stringContaining('Find correctness defects.'),
+    ])
+    expect(requests).toHaveLength(4)
+  })
+
+  it('hard-denies recursive team and subagent tools inside squad members', async () => {
+    const state = createService({
+      toolSchemas: () => [
+        { name: 'read_file', description: 'Read' },
+        { name: 'dispatch_to_squad', description: 'Dispatch' },
+        { name: 'subagent', description: 'Delegate' },
+      ],
+    })
+    await state.agents.put(researcherId, {
+      ...agent('Researcher'),
+      toolScope: { allow: ['read_file', 'dispatch_to_squad', 'subagent'] },
+    })
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId] })
+
+    await state.service.dispatch({ squadId, task: 'safe work' }, state.parent, new AbortController().signal)
+
+    expect(state.starts[0]?.request.toolFilter).toEqual({
+      allow: ['read_file', 'dispatch_to_squad', 'subagent'],
+      deny: ['dispatch_to_squad', 'subagent'],
+    })
+    expect(state.starts[0]?.request.prompt[0]).toMatchObject({
+      type: 'text', text: expect.stringContaining('do not create or delegate to subagents'),
+    })
+  })
+
+  it('rejects a nested squad dispatch even if a child somehow reaches the tool', async () => {
+    const state = await populate()
+    const child = {
+      id: SessionId('nested-child'),
+      session: { header: { parentSession: state.parent.id, origin: 'subagent', delegationDepth: 1 } },
+    } as unknown as Agent
+
+    await expect(state.service.dispatch({ squadId, task: 'recurse' }, child, new AbortController().signal))
+      .rejects.toMatchObject({ code: 'INVALID_DISPATCH', message: expect.stringContaining('nested') })
+    expect(state.starts).toEqual([])
+    expect(state.service.listRuns()).toEqual([])
+  })
+
   it('uses squad defaults and a complete model-selected memberOrder', async () => {
     const state = createService()
     await state.agents.put(researcherId, agent('Researcher'))
@@ -361,6 +555,43 @@ describe('AgentTeamService dispatch', () => {
       { agentId: researcherId, status: 'completed' },
       { agentId: writerId, status: 'skipped', error: expect.stringContaining('token-budget') },
     ])
+  })
+
+  it('streams official token projection updates while a member is still running', async () => {
+    let finish: ((value: { output: never[]; stopReason: 'completed' }) => void) | undefined
+    let child: Agent | undefined
+    let listener: ((session: Agent['session'], key: string, value: unknown, seq: number) => void) | undefined
+    let projection = {
+      uncachedInputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheWriteTokens: 0,
+    }
+    const result = new Promise<{ output: never[]; stopReason: 'completed' }>((resolve) => { finish = resolve })
+    const state = createService({
+      start: async () => {
+        child = { id: SessionId('live-usage'), session: { header: {} } } as unknown as Agent
+        return { id: child.id, localAgent: child, result, async dispose() {} }
+      },
+    })
+    state.ctx.provide('sessionProjections', {
+      snapshot: () => ({ values: { tokenUsage: projection } }),
+      onChanged: (next: typeof listener) => { listener = next; return () => { listener = undefined } },
+    })
+    await state.agents.put(researcherId, agent('Researcher'))
+    await state.squads.put(squadId, { name: 'Delivery', members: [researcherId] })
+
+    const dispatch = state.service.dispatch({ squadId, task: 'meter live' }, state.parent, new AbortController().signal)
+    await vi.waitFor(() => { expect(listener).toBeDefined() })
+    projection = { uncachedInputTokens: 90, outputTokens: 12, cacheReadTokens: 8, cacheWriteTokens: 0 }
+    listener?.(child!.session, 'tokenUsage', projection, 1)
+    await vi.waitFor(() => {
+      expect(state.service.listRuns(state.parent.id)[0]).toMatchObject({
+        status: 'running',
+        usage: { totalTokens: 110, providerReported: true },
+        members: [{ status: 'running', usage: { totalTokens: 110, providerReported: true } }],
+      })
+    })
+
+    finish?.({ output: [], stopReason: 'completed' })
+    await expect(dispatch).resolves.toMatchObject({ usage: { totalTokens: 110 } })
   })
 })
 
