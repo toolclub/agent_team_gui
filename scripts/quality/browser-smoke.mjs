@@ -134,7 +134,11 @@ let page
 let failed = true
 try {
   await fixture.install()
-  await fixture.start()
+  const browserBaseUrl = await fixture.start()
+  // stop() deliberately clears the fixture's mutable baseUrl while the Host is
+  // offline. Event listeners must retain the origin of this browser journey so
+  // an expected reconnect probe can still be matched during that interval.
+  invariant(typeof browserBaseUrl === 'string' && browserBaseUrl !== '', 'browser fixture did not expose its initial base URL')
   const seed = await fixture.seedDefinitions('browser-smoke')
   const createdSessionId = await fixture.createBrowserSession()
   // Chromium receives the same credential-free, temporary Home/XDG/DSH roots as
@@ -148,6 +152,7 @@ try {
   page = await context.newPage()
   const runtimeErrors = []
   const failedResponses = []
+  let restartInProgress = false
   let restartGraceUntil = 0
   page.on('pageerror', error => runtimeErrors.push(`pageerror: ${error.message}`))
   page.on('response', response => {
@@ -158,12 +163,12 @@ try {
     // Chromium can deliver the console record for the official reconnect probe
     // shortly after the successful snapshot response. Keep a bounded grace
     // period tied to the deliberate restart instead of a racy boolean flip.
-    const intentionalRestart = Date.now() <= restartGraceUntil
+    const intentionalRestart = restartInProgress || Date.now() <= restartGraceUntil
     const expectedTransportClose = intentionalRestart
       && /WebSocket connection|ERR_CONNECTION_REFUSED|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(message.text())
     const expectedHostDescribe404 = isExpectedRestartHostDescribe404({
       intentionalRestart,
-      baseUrl: fixture.baseUrl,
+      baseUrl: browserBaseUrl,
       sourceUrl: location.url,
       message: message.text(),
     })
@@ -180,7 +185,7 @@ try {
     response => response.url().includes('/agent-team-gui/snapshot') && response.request().method() === 'POST',
     { timeout: 60_000 },
   )
-  await page.goto(fixture.baseUrl, { waitUntil: 'domcontentloaded' })
+  await page.goto(browserBaseUrl, { waitUntil: 'domcontentloaded' })
   await completeOnboarding(page)
   const response = await snapshotResponse
   invariant(response.ok(), `browser snapshot request returned HTTP ${response.status()}`)
@@ -279,7 +284,12 @@ try {
   await page.keyboard.press('Escape')
   await queuePanel.waitFor({ state: 'hidden', timeout: 5_000 })
 
-  restartGraceUntil = Date.now() + 15_000
+  // Keep the exception active for the whole deliberate outage. Starting a
+  // fixed deadline before stop made a slow CI restart outlive its own grace
+  // period. After the first healthy snapshot, retain only a short allowance
+  // for Chromium console records that are delivered after the HTTP response.
+  restartInProgress = true
+  restartGraceUntil = 0
   await fixture.stop()
   const consumedNext = await fixture.consumeNextOverrideForEligibleMessage(sessionId, 'browser-smoke-one-shot-message')
   invariant(consumedNext?.state === 'team' && consumedNext.squadId === seed.squadId, 'eligible message did not claim the queued Team override')
@@ -292,8 +302,11 @@ try {
     candidate.url().includes('/agent-team-gui/snapshot') && candidate.request().method() === 'POST',
     { timeout: 30_000 },
   )
-  await fixture.start()
+  const restartedBaseUrl = await fixture.start()
+  invariant(restartedBaseUrl === browserBaseUrl, `browser Host restart changed origin from ${browserBaseUrl} to ${restartedBaseUrl}`)
   invariant((await reconnectSnapshot).ok(), 'browser did not refresh the team catalog after Host restart')
+  restartInProgress = false
+  restartGraceUntil = Date.now() + 15_000
   await trigger.filter({ hasText: /Inherited|继承/ }).waitFor({ state: 'visible', timeout: 15_000 })
   invariant(await trigger.isEnabled(), 'team composer remained disabled after live Host restart')
   const recoveredRun = await fixture.rpc('run/get', { id: seededRunId })
@@ -591,7 +604,7 @@ try {
     ...runtimeErrors,
     ...(failedResponses.length === 0 ? [] : ['HTTP failures observed:', ...failedResponses]),
   ].join('\n'))
-  process.stdout.write(`Browser smoke passed at ${fixture.baseUrl} (cold/one-shot/project modes, Host restart, Settings, retry/cancel, insights, light/dark axe, keyboard, and 390px layout).\n`)
+  process.stdout.write(`Browser smoke passed at ${browserBaseUrl} (cold/one-shot/project modes, Host restart, Settings, retry/cancel, insights, light/dark axe, keyboard, and 390px layout).\n`)
   failed = false
 } finally {
   if (failed && page !== undefined && process.env.SMOKE_SCREENSHOT_DIR) {
