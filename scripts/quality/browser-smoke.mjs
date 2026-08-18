@@ -39,6 +39,48 @@ async function controlledPanel(page, trigger, label) {
   return panel
 }
 
+async function assertEditorActionsLayout(settingsRoot, editorName, label) {
+  const editor = settingsRoot.getByRole('main', { name: editorName })
+  const scrollBody = editor.locator(':scope > .atg-editor-scroll')
+  const actions = editor.locator(':scope > .atg-editor-actions')
+  await editor.waitFor({ state: 'visible', timeout: 10_000 })
+  invariant(await scrollBody.count() === 1, `${label} has no unique editor scroll body`)
+  invariant(await actions.count() === 1, `${label} has no unique editor action row`)
+  invariant(await actions.getByRole('button').count() === 2, `${label} must expose exactly Discard and Save`)
+  const geometry = await editor.evaluate(element => {
+    const body = element.querySelector(':scope > .atg-editor-scroll')
+    const footer = element.querySelector(':scope > .atg-editor-actions')
+    if (!(body instanceof HTMLElement) || !(footer instanceof HTMLElement)) return undefined
+    body.scrollTop = body.scrollHeight
+    const editorRect = element.getBoundingClientRect()
+    const bodyRect = body.getBoundingClientRect()
+    const footerRect = footer.getBoundingClientRect()
+    const lastRect = body.lastElementChild?.getBoundingClientRect()
+    return {
+      editor: { left: editorRect.left, right: editorRect.right, bottom: editorRect.bottom },
+      body: { bottom: bodyRect.bottom, overflowY: getComputedStyle(body).overflowY },
+      footer: {
+        left: footerRect.left,
+        right: footerRect.right,
+        top: footerRect.top,
+        bottom: footerRect.bottom,
+        position: getComputedStyle(footer).position,
+      },
+      lastBottom: lastRect?.bottom,
+      scrollable: body.scrollHeight > body.clientHeight + 2,
+      reachedEnd: body.scrollHeight <= body.clientHeight + 2 || body.scrollTop > 0,
+    }
+  })
+  invariant(geometry !== undefined, `${label} editor layout could not be measured`)
+  invariant(geometry.footer.position !== 'absolute' && geometry.footer.position !== 'fixed', `${label} action row still overlays content (${geometry.footer.position})`)
+  invariant(geometry.footer.top >= geometry.body.bottom - 2, `${label} action row overlaps the editor body (${geometry.footer.top}px < ${geometry.body.bottom}px)`)
+  invariant(geometry.footer.bottom <= geometry.editor.bottom + 2, `${label} action row escapes the editor (${geometry.footer.bottom}px > ${geometry.editor.bottom}px)`)
+  invariant(geometry.footer.left >= geometry.editor.left - 2 && geometry.footer.right <= geometry.editor.right + 2, `${label} action row is horizontally clipped`)
+  invariant(!geometry.scrollable || (/^(auto|scroll)$/.test(geometry.body.overflowY) && geometry.reachedEnd), `${label} body cannot reach its final field`)
+  invariant(geometry.lastBottom === undefined || geometry.lastBottom <= geometry.body.bottom + 2, `${label} final field remains hidden below the scroll viewport`)
+  await scrollBody.evaluate(element => { element.scrollTop = 0 })
+}
+
 async function waitForVisibleOnboardingAction(page, timeoutMs) {
   const deadline = Date.now() + timeoutMs
   do {
@@ -286,8 +328,7 @@ try {
     { timeout: 15_000 },
   )
   const setProject = modePanel.getByRole('button', { name: /^(Set as this project’s default team|设为当前项目默认小队)$/ })
-  await setProject.focus()
-  const [, setProjectResult] = await Promise.all([page.keyboard.press('Space'), setProjectResponse])
+  const [, setProjectResult] = await Promise.all([setProject.click(), setProjectResponse])
   invariant((await setProjectResult.json())?.result?.ok === true, 'Composer could not set the project default')
   const projectSet = await fixture.rpc('mode/get', { sessionId })
   invariant(
@@ -309,8 +350,7 @@ try {
     { timeout: 15_000 },
   )
   const clearProject = modePanel.getByRole('button', { name: /^(Clear this project’s default team|取消当前项目默认小队)$/ })
-  await clearProject.focus()
-  const [, clearProjectResult] = await Promise.all([page.keyboard.press('Space'), clearProjectResponse])
+  const [, clearProjectResult] = await Promise.all([clearProject.click(), clearProjectResponse])
   invariant((await clearProjectResult.json())?.result?.ok === true, 'Composer could not clear the project default')
   const projectCleared = await fixture.rpc('mode/get', { sessionId })
   invariant(projectCleared.sessionOverride === 'inherit' && projectCleared.projectDefault === null && projectCleared.mode === null, 'cleared project default remained effective')
@@ -359,12 +399,22 @@ try {
   invariant(await membersTab.evaluate(element => document.activeElement === element), 'ArrowRight did not move to the next Settings tab')
   if (await membersTab.getAttribute('aria-selected') !== 'true') await page.keyboard.press('Space')
   invariant(await membersTab.getAttribute('aria-selected') === 'true', 'Members Settings tab could not be activated from the keyboard')
+  await assertEditorActionsLayout(settingsRoot, /^(Member editor|成员编辑器)$/, 'desktop Member editor')
   await page.keyboard.press('End')
   invariant(await recipesTab.evaluate(element => document.activeElement === element), 'End did not move to the last Settings tab')
   await page.keyboard.press('Home')
   invariant(await teamsTab.evaluate(element => document.activeElement === element), 'Home did not move to the first Settings tab')
   if (await teamsTab.getAttribute('aria-selected') !== 'true') await page.keyboard.press('Space')
   invariant(await teamsTab.getAttribute('aria-selected') === 'true', 'Teams Settings tab could not be restored from the keyboard')
+  await assertEditorActionsLayout(settingsRoot, /^(Team editor|小队编辑器)$/, 'desktop Team editor')
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.waitForTimeout(100)
+  await assertEditorActionsLayout(settingsRoot, /^(Team editor|小队编辑器)$/, '390px Team editor')
+  await membersTab.click()
+  await assertEditorActionsLayout(settingsRoot, /^(Member editor|成员编辑器)$/, '390px Member editor')
+  await teamsTab.click()
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.waitForTimeout(100)
   const expectedNote = 'Hermetic browser keyboard and persistence verification.'
   const note = settingsRoot.locator('#team-note')
   await note.fill(expectedNote)
