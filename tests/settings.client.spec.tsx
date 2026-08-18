@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { TeamSettingsPage, type TeamSettingsPageProps } from '../src/client/SettingsPage.tsx'
 import type { AgentTeamRpc, SquadView, TeamSnapshot } from '../src/client/contracts.ts'
 import { AgentTeamController } from '../src/client/controller.ts'
+import { CLIENT_STYLES } from '../src/client/styles.ts'
 
 const DEFINITION_REVISION = 17
 
@@ -41,6 +42,49 @@ beforeEach(() => { vi.stubGlobal('confirm', vi.fn(() => true)) })
 afterEach(() => { vi.useRealTimers() })
 
 describe('TeamSettingsPage', () => {
+  it('keeps team and member actions outside their keyboard-scrollable editor bodies', async () => {
+    const { controller, user } = await setup(async <T,>(endpoint: string) => {
+      if (endpoint === 'snapshot') return catalog() as T
+      if (endpoint === 'squad/versions') return [] as T
+      throw new Error(`unexpected ${endpoint}`)
+    })
+    render(<TeamSettingsPage {...settingsProps(controller)} />)
+
+    const assertLayout = (editorName: string): { editor: HTMLElement; actions: HTMLElement } => {
+      const editor = screen.getByRole('main', { name: editorName })
+      const scrollBody = within(editor).getByRole('region', { name: editorName })
+      const actions = within(editor).getByRole('group', { name: '编辑操作' })
+      expect(scrollBody).toHaveAttribute('tabindex', '0')
+      expect(editor.firstElementChild).toBe(scrollBody)
+      expect(editor.lastElementChild).toBe(actions)
+      expect(scrollBody).not.toContainElement(actions)
+      expect(actions).toHaveClass('atg-editor-actions')
+      expect(actions).not.toHaveClass('atg-sticky-actions')
+      return { editor, actions }
+    }
+
+    const team = assertLayout('小队编辑器')
+    expect(within(team.actions).getByRole('button', { name: '保存' })).toBeDisabled()
+    expect(within(team.actions).getByRole('button', { name: '放弃修改' })).toBeDisabled()
+    fireEvent.change(screen.getByLabelText('小队名称'), { target: { value: 'Unsaved delivery' } })
+    expect(within(team.actions).getByText('有未保存修改')).toBeInTheDocument()
+    expect(within(team.actions).getByRole('button', { name: '保存' })).toBeEnabled()
+    await user.click(within(team.actions).getByRole('button', { name: '放弃修改' }))
+    expect(screen.getByLabelText('小队名称')).toHaveValue('Delivery')
+
+    await user.click(screen.getByRole('tab', { name: /成员库/ }))
+    const member = assertLayout('成员编辑器')
+    fireEvent.change(screen.getByLabelText('成员名称'), { target: { value: 'Unsaved builder' } })
+    expect(within(member.actions).getByRole('button', { name: '保存' })).toBeEnabled()
+    await user.click(within(member.actions).getByRole('button', { name: '放弃修改' }))
+    expect(screen.getByLabelText('成员名称')).toHaveValue('Builder')
+    expect(within(member.actions).getByRole('button', { name: '保存' })).toBeDisabled()
+
+    expect(CLIENT_STYLES).not.toContain('.atg-sticky-actions')
+    expect(CLIENT_STYLES).toContain('.atg-editor{display:grid;grid-template-rows:minmax(0,1fr) auto')
+    expect(CLIENT_STYLES).toContain('@media(max-width:430px){.atg-editor-actions>span:not(:empty)')
+  })
+
   it('selects the first persisted team, keeps it selected after save, and guards dirty navigation', async () => {
     let data = catalog()
     const rpc: AgentTeamRpc = async <T,>(endpoint: string, payload: unknown) => {
