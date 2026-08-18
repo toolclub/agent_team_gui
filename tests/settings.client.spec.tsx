@@ -42,7 +42,7 @@ beforeEach(() => { vi.stubGlobal('confirm', vi.fn(() => true)) })
 afterEach(() => { vi.useRealTimers() })
 
 describe('TeamSettingsPage', () => {
-  it('keeps team and member actions outside their keyboard-scrollable editor bodies', async () => {
+  it('renders team and member actions last in the keyboard-scrollable form flow', async () => {
     const { controller, user } = await setup(async <T,>(endpoint: string) => {
       if (endpoint === 'snapshot') return catalog() as T
       if (endpoint === 'squad/versions') return [] as T
@@ -56,8 +56,9 @@ describe('TeamSettingsPage', () => {
       const actions = within(editor).getByRole('group', { name: '编辑操作' })
       expect(scrollBody).toHaveAttribute('tabindex', '0')
       expect(editor.firstElementChild).toBe(scrollBody)
-      expect(editor.lastElementChild).toBe(actions)
-      expect(scrollBody).not.toContainElement(actions)
+      expect(editor.lastElementChild).toBe(scrollBody)
+      expect(scrollBody.lastElementChild).toBe(actions)
+      expect(scrollBody).toContainElement(actions)
       expect(actions).toHaveClass('atg-editor-actions')
       expect(actions).not.toHaveClass('atg-sticky-actions')
       return { editor, actions }
@@ -81,7 +82,9 @@ describe('TeamSettingsPage', () => {
     expect(within(member.actions).getByRole('button', { name: '保存' })).toBeDisabled()
 
     expect(CLIENT_STYLES).not.toContain('.atg-sticky-actions')
-    expect(CLIENT_STYLES).toContain('.atg-editor{display:grid;grid-template-rows:minmax(0,1fr) auto')
+    expect(CLIENT_STYLES).toContain('.atg-editor{display:flex;min-height:0;overflow:hidden}')
+    expect(CLIENT_STYLES.match(/\.atg-editor-actions\{([^}]*)\}/)?.[1]).not.toMatch(/position:(?:absolute|fixed|sticky)/)
+    expect(CLIENT_STYLES.match(/\.atg-editor\{([^}]*)\}/)?.[1]).not.toContain('grid-template-rows')
     expect(CLIENT_STYLES).toContain('@media(max-width:430px){.atg-editor-actions>span:not(:empty)')
   })
 
