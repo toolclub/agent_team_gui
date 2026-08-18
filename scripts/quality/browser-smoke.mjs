@@ -42,23 +42,24 @@ async function controlledPanel(page, trigger, label) {
 async function assertEditorActionsLayout(settingsRoot, editorName, label) {
   const editor = settingsRoot.getByRole('main', { name: editorName })
   const scrollBody = editor.locator(':scope > .atg-editor-scroll')
-  const actions = editor.locator(':scope > .atg-editor-actions')
+  const actions = scrollBody.locator(':scope > .atg-editor-actions')
   await editor.waitFor({ state: 'visible', timeout: 10_000 })
   invariant(await scrollBody.count() === 1, `${label} has no unique editor scroll body`)
   invariant(await actions.count() === 1, `${label} has no unique editor action row`)
   invariant(await actions.getByRole('button').count() === 2, `${label} must expose exactly Discard and Save`)
   const geometry = await editor.evaluate(element => {
     const body = element.querySelector(':scope > .atg-editor-scroll')
-    const footer = element.querySelector(':scope > .atg-editor-actions')
+    const footer = body?.querySelector(':scope > .atg-editor-actions')
     if (!(body instanceof HTMLElement) || !(footer instanceof HTMLElement)) return undefined
+    const initialFooterTop = footer.getBoundingClientRect().top
     body.scrollTop = body.scrollHeight
     const editorRect = element.getBoundingClientRect()
     const bodyRect = body.getBoundingClientRect()
     const footerRect = footer.getBoundingClientRect()
-    const lastRect = body.lastElementChild?.getBoundingClientRect()
+    const previousRect = footer.previousElementSibling?.getBoundingClientRect()
     return {
       editor: { left: editorRect.left, right: editorRect.right, bottom: editorRect.bottom },
-      body: { bottom: bodyRect.bottom, overflowY: getComputedStyle(body).overflowY },
+      body: { left: bodyRect.left, right: bodyRect.right, bottom: bodyRect.bottom, overflowY: getComputedStyle(body).overflowY },
       footer: {
         left: footerRect.left,
         right: footerRect.right,
@@ -66,18 +67,19 @@ async function assertEditorActionsLayout(settingsRoot, editorName, label) {
         bottom: footerRect.bottom,
         position: getComputedStyle(footer).position,
       },
-      lastBottom: lastRect?.bottom,
+      initialFooterTop,
+      previousBottom: previousRect?.bottom,
       scrollable: body.scrollHeight > body.clientHeight + 2,
       reachedEnd: body.scrollHeight <= body.clientHeight + 2 || body.scrollTop > 0,
     }
   })
   invariant(geometry !== undefined, `${label} editor layout could not be measured`)
-  invariant(geometry.footer.position !== 'absolute' && geometry.footer.position !== 'fixed', `${label} action row still overlays content (${geometry.footer.position})`)
-  invariant(geometry.footer.top >= geometry.body.bottom - 2, `${label} action row overlaps the editor body (${geometry.footer.top}px < ${geometry.body.bottom}px)`)
-  invariant(geometry.footer.bottom <= geometry.editor.bottom + 2, `${label} action row escapes the editor (${geometry.footer.bottom}px > ${geometry.editor.bottom}px)`)
-  invariant(geometry.footer.left >= geometry.editor.left - 2 && geometry.footer.right <= geometry.editor.right + 2, `${label} action row is horizontally clipped`)
+  invariant(!['absolute', 'fixed', 'sticky'].includes(geometry.footer.position), `${label} action row still floats over content (${geometry.footer.position})`)
+  invariant(!geometry.scrollable || geometry.footer.top < geometry.initialFooterTop - 1, `${label} action row did not move with the scrolled form`)
+  invariant(geometry.previousBottom === undefined || geometry.footer.top >= geometry.previousBottom - 2, `${label} action row overlaps the preceding form content`)
+  invariant(geometry.footer.bottom <= geometry.body.bottom + 2, `${label} action row is not reachable at the end of the form`)
+  invariant(geometry.footer.left >= geometry.body.left - 2 && geometry.footer.right <= geometry.body.right + 2, `${label} action row is horizontally clipped`)
   invariant(!geometry.scrollable || (/^(auto|scroll)$/.test(geometry.body.overflowY) && geometry.reachedEnd), `${label} body cannot reach its final field`)
-  invariant(geometry.lastBottom === undefined || geometry.lastBottom <= geometry.body.bottom + 2, `${label} final field remains hidden below the scroll viewport`)
   await scrollBody.evaluate(element => { element.scrollTop = 0 })
 }
 
@@ -146,13 +148,17 @@ try {
   page = await context.newPage()
   const runtimeErrors = []
   const failedResponses = []
-  let intentionalRestart = false
+  let restartGraceUntil = 0
   page.on('pageerror', error => runtimeErrors.push(`pageerror: ${error.message}`))
   page.on('response', response => {
     if (response.status() >= 400) failedResponses.push(`${response.status()} ${response.url()}`)
   })
   page.on('console', message => {
     const location = message.location()
+    // Chromium can deliver the console record for the official reconnect probe
+    // shortly after the successful snapshot response. Keep a bounded grace
+    // period tied to the deliberate restart instead of a racy boolean flip.
+    const intentionalRestart = Date.now() <= restartGraceUntil
     const expectedTransportClose = intentionalRestart
       && /WebSocket connection|ERR_CONNECTION_REFUSED|ERR_INCOMPLETE_CHUNKED_ENCODING/i.test(message.text())
     const expectedHostDescribe404 = isExpectedRestartHostDescribe404({
@@ -273,7 +279,7 @@ try {
   await page.keyboard.press('Escape')
   await queuePanel.waitFor({ state: 'hidden', timeout: 5_000 })
 
-  intentionalRestart = true
+  restartGraceUntil = Date.now() + 15_000
   await fixture.stop()
   const consumedNext = await fixture.consumeNextOverrideForEligibleMessage(sessionId, 'browser-smoke-one-shot-message')
   invariant(consumedNext?.state === 'team' && consumedNext.squadId === seed.squadId, 'eligible message did not claim the queued Team override')
@@ -288,7 +294,6 @@ try {
   )
   await fixture.start()
   invariant((await reconnectSnapshot).ok(), 'browser did not refresh the team catalog after Host restart')
-  intentionalRestart = false
   await trigger.filter({ hasText: /Inherited|继承/ }).waitFor({ state: 'visible', timeout: 15_000 })
   invariant(await trigger.isEnabled(), 'team composer remained disabled after live Host restart')
   const recoveredRun = await fixture.rpc('run/get', { id: seededRunId })
