@@ -34,7 +34,7 @@
 DSH provider/model 路由。
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.5.0
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v1.0.0
 dsh --profile web
 ```
 
@@ -290,7 +290,7 @@ dsh plugin --profile web add -w ./dist/dsh-agent-team-gui-0.5.0.tgz
 
 可以在 DeepSeek Harness 中直接发送这一句话：
 
-> 按照 https://github.com/toolclub/dsh-agent-team-gui 的安装与安全说明，把已经审查的 v0.5.0
+> 按照 https://github.com/toolclub/dsh-agent-team-gui 的安装与安全说明，把已经审查的 v1.0.0
 > tag 安装到 Web profile；如果 pnpm 询问 `allowBuilds`，只授权 `dsh-agent-team-gui`；重启
 > Web，验证组合配置，并汇报实际安装的准确 revision。
 

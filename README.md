@@ -35,7 +35,7 @@ Requirements: DeepSeek Harness `>=0.1.0-rc.5 <0.2.0`, the **Web** profile, Node.
 provider/model route.
 
 ```sh
-dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v0.5.0
+dsh plugin --profile web add -w github:toolclub/dsh-agent-team-gui#v1.0.0
 dsh --profile web
 ```
 
@@ -301,7 +301,7 @@ credential patterns.
 You can send this single instruction inside DeepSeek Harness:
 
 > Follow the installation and security notes in
-> https://github.com/toolclub/dsh-agent-team-gui. Install the reviewed v0.5.0 tag into the Web
+> https://github.com/toolclub/dsh-agent-team-gui. Install the reviewed v1.0.0 tag into the Web
 > profile, authorize only `dsh-agent-team-gui` if pnpm asks for `allowBuilds`, restart Web, verify the
 > composed configuration, and report the exact installed revision.
 

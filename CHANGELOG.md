@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.0.0 — 2026-08-19
+
+- **Structured retrospective synthesis**: the main Agent no longer produces a flat "synthesize
+  these results" summary. After every squad run it now delivers a six-section retrospective:
+  1. squad execution summary with per-member outcomes, 2. what went well, 3. what did not go well
+  with root causes, 4. knowledge gap analysis classifying gaps as missing repository knowledge,
+  missing user-supplied domain knowledge, scope/planning issues, or tool/execution limitations,
+  5. concrete improvement recommendations for progressive disclosure or direct documentation, and
+  6. a final verdict on squad effectiveness.
+- Fix `.cursor/rules` and `.dsh/rules` backtick escaping in the progressive-disclosure guidance
+  inside the retrospective prompt.
+
 ## 0.5.0 — 2026-08-17
 
 - Add first-class **Team**, **Solo**, and **Inherited** conversation modes plus a durable one-shot
