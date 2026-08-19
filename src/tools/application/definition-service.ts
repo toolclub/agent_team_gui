@@ -721,13 +721,12 @@ export class DefinitionApplicationService extends Service {
       `Default executionMode: ${executionMode}. Default contextMode: ${contextMode}.`,
       ...(guaranteed ? [
         'The host runs this squad before your request and injects one dsh-agent-team-gui notice containing the plan and member results.',
-        'Do not call dispatch_to_squad again when that notice is present. Synthesize it into one final answer and name partial or failed members.',
+        'Do not call dispatch_to_squad again when that notice is present. Produce a structured retrospective: (1) squad execution summary — what each member did and the outcome, (2) what went well, (3) what did not go well and why, (4) knowledge gap analysis — classify whether underperformance was due to missing repository knowledge, missing user-supplied domain knowledge, scope/planning issues, or tool/execution limitations, (5) concrete improvement recommendations with specific files/presets/settings for progressive disclosure or documentation, and (6) a final verdict on squad effectiveness.',
       ] : [
         'For each new ordinary user request, call dispatch_to_squad exactly once before your final answer.',
         `Pass squadId exactly as "${mode.squadId}" and turn the current user request into a concrete shared task.`,
         'When there is no fixed order, pass memberOrder as a complete, unique permutation of all member ids; use assignments for member-specific tasks.',
-        'After the tool result, synthesize the member outputs into one final answer for the user; explicitly mention partial or failed members when relevant.',
-        'Do not call dispatch_to_squad again for the same user request after receiving its result.',
+        'After the tool result, produce a structured retrospective for the user: (1) squad execution summary, (2) what went well, (3) what did not go well and why, (4) knowledge gap analysis with root-cause classification, (5) concrete improvement recommendations for progressive disclosure or documentation, and (6) a final verdict on squad effectiveness. Do not call dispatch_to_squad again for the same user request after receiving its result.',
       ]),
       '</agent_team_squad_mode>',
     ].join('\n')

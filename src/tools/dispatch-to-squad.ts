@@ -171,7 +171,7 @@ export function createDispatchToSquadTool(service: AgentTeamService) {
               }),
             }
           })(),
-          note: 'Full member outputs are persisted in Run Center and intentionally omitted here.',
+          note: 'Full member outputs are persisted in Run Center and intentionally omitted here. After receiving this result, produce a structured retrospective: (1) what the squad accomplished, (2) what went well and what did not, (3) knowledge gap analysis — was missing context about the codebase or missing user-supplied domain knowledge the root cause of any underperformance, (4) concrete improvement suggestions for progressive disclosure or documentation, and (5) a final retrospective summary with a verdict on squad effectiveness.',
         }
         return [{ type: 'text', text: JSON.stringify(bounded, null, 2) }]
       },
